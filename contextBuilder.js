@@ -1,6 +1,6 @@
 /**
- * contextBuilder.js (v1.1.1 Hotfix)
- * Multi-turn context formatter, recency anchoring engine, strict OOC override parser,
+ * contextBuilder.js (v1.1.2 Hotfix)
+ * Multi-turn context formatter, recency anchoring engine, strict OOC co-author mode,
  * thinking budget enforcement, and conditional 5+ paragraph / 550+ word enforcement.
  */
 
@@ -74,46 +74,58 @@ export class ContextBuilder {
     const hasOOCDirective = latestOOC.length > 0;
     const extractedOOC = latestOOC.join(' | ');
 
-    // Detect if this is an explicit pause, stop, or purely OOC request
-    const isExplicitPause =
-      hasOOCDirective &&
-      /\b(pause|stop|halt|freeze|break|wait|hold\s*on|timeout|quit)\b/i.test(extractedOOC);
+    // Pure OOC: No in-character dialogue or actions outside the brackets
     const isPureOOC = hasOOCDirective && latestUserDialogue.length === 0;
-    const isOOCPauseActive = isExplicitPause || isPureOOC;
+
+    // Explicit Meta Request: Summary, recap, pause, explanation, lore questions
+    const isExplicitMeta =
+      hasOOCDirective &&
+      /\b(pause|stop|halt|freeze|break|wait|hold\s*on|timeout|quit|summary|summarize|recap|explain|clarify|question|help|rewind|retry|what\s+if)\b/i.test(extractedOOC);
+
+    // If either condition is true, roleplay is suspended and AI enters Co-Writer / Meta Mode
+    const isOOCMode = isPureOOC || isExplicitMeta;
 
     const promptSegments = [];
 
     // =========================================================================
-    // CASE A: OOC PAUSE ACTIVE (User wants to pause or chat purely out of character)
+    // CASE A: OUT-OF-CHARACTER (OOC) / CO-AUTHOR MODE
+    // Used for summaries, recaps, pauses, lore discussions, and meta inquiries
     // =========================================================================
-    if (isOOCPauseActive) {
+    if (isOOCMode) {
       promptSegments.push(
-        '=== SYSTEM META-DIRECTIVE: OOC PAUSE MODE ===\n' +
-        'THE ROLEPLAY IS CURRENTLY PAUSED BY USER COMMAND.\n' +
-        'CRITICAL INSTRUCTIONS:\n' +
-        '1. DO NOT generate ANY story narrative, scene descriptions, or character dialogue.\n' +
-        '2. DO NOT say "resuming the narrative" or continue the roleplay.\n' +
-        '3. DO NOT apply any minimum length or 5-paragraph rules.\n' +
-        '4. Respond EXCLUSIVELY out-of-character in brackets: [ OOC: ... ].\n' +
-        '5. Acknowledge the user\'s OOC comment or question directly and await further instruction before resuming.'
+        '=== SYSTEM META-DIRECTIVE: OUT-OF-CHARACTER (OOC) MODE ===\n' +
+        'The user has stepped OUT OF CHARACTER to speak with you directly as the AI Co-Author / Assistant.\n' +
+        'CRITICAL INSTRUCTIONS FOR THIS TURN:\n' +
+        '1. IN-CHARACTER ROLEPLAY IS SUSPENDED. You are strictly forbidden from writing as the character persona.\n' +
+        '2. Speak EXCLUSIVELY as the AI Co-Author/Storyteller in Out-Of-Character brackets: [ OOC: ... ].\n' +
+        '3. THOROUGHLY FULFILL THE USER\'S REQUEST: If asked for a summary, provide a comprehensive, structured in-depth summary of the entire roleplay transcript. If asked a question or given a pause command, answer it completely.\n' +
+        '4. Do NOT enforce narrative 5-paragraph roleplay constraints. Deliver whatever length is necessary to answer the user\'s OOC prompt.\n' +
+        '5. Do NOT say "resuming narrative" and do NOT output any character dialogue.'
       );
 
+      // Disarm the character card by marking it strictly as reference material
       if (systemParts.length > 0) {
-        promptSegments.push('=== BACKGROUND SCENARIO (PAUSED) ===\n' + systemParts.join('\n\n'));
+        promptSegments.push(
+          '=== REFERENCE MATERIAL (FOR CONTEXT ONLY - DO NOT ADOPT PERSONA) ===\n' +
+          systemParts.join('\n\n')
+        );
       }
 
       if (transcriptParts.length > 0) {
-        promptSegments.push('=== PREVIOUS CHAT LOG ===');
+        promptSegments.push('=== CHAT TRANSCRIPT TO REFERENCE ===');
         for (const turn of transcriptParts) {
           promptSegments.push(`${turn.role}: ${turn.content}`);
         }
       }
 
       promptSegments.push(
-        '=== URGENT EXECUTION OVERRIDE ===\n' +
-        `User OOC Command: "${extractedOOC}"\n` +
-        'The roleplay is PAUSED. You are strictly forbidden from writing in-character.\n' +
-        'Output ONLY a concise OOC response in [ OOC: ... ] and terminate generation immediately.\n\n' +
+        '=== CRITICAL OOC EXECUTION INSTRUCTION ===\n' +
+        `User OOC Directive: "${extractedOOC}"\n\n` +
+        'MANDATORY RULES:\n' +
+        '- You are the AI Assistant / Co-Writer. Fulfill the user\'s directive completely and thoroughly.\n' +
+        '- If a full/in-depth summary is requested, synthesize the entire transcript above into a detailed summary.\n' +
+        '- Do NOT write as {{char}}. Do NOT generate story prose.\n' +
+        '- Enclose your entire response inside [ OOC: ... ].\n\n' +
         'Assistant:'
       );
 
@@ -152,11 +164,11 @@ export class ContextBuilder {
       }
     }
 
-    // Mixed Turn: User provided an in-character action + an OOC direction (e.g. `*smiles* [ OOC: make him angry ]`)
+    // Mixed Turn: e.g. `*smiles* [ OOC: Make him angry ]`
     if (hasOOCDirective) {
       promptSegments.push(
         '=== OUT-OF-CHARACTER META-DIRECTIVE ===\n' +
-        `The user provided an out-of-character behavioral directive: "${extractedOOC}".\n` +
+        `The user provided an out-of-character behavioral directive: "${extractedOOC}".\n' +
         'Incorporate this directive into the character\'s actions and behavior while maintaining the narrative.'
       );
     }
