@@ -1,0 +1,27 @@
+{
+  "name": "asriel-proxy-gemini",
+  "version": "1.0.0",
+  "description": "High-performance OpenAI-to-Gemini reverse proxy middleware tailored for JanitorAI with context anchoring, stream sanitization, and account cycling.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "janitorai",
+    "gemini",
+    "reverse-proxy",
+    "openai-compatible",
+    "llm-middleware",
+    "termux"
+  ],
+  "author": "Asriel-Dev",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
