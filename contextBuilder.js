@@ -1,14 +1,14 @@
 /**
- * contextBuilder.js
- * Multi-turn context formatter, recency anchoring engine, OOC extractor,
- * and reasoning budget enforcement.
+ * contextBuilder.js (v1.1 Update)
+ * Multi-turn context formatter, recency anchoring engine, strict OOC override parser,
+ * thinking budget enforcement, and 5+ paragraph / 550+ word minimum length enforcement.
  */
 
 import { config } from './config.js';
 
 export class ContextBuilder {
   /**
-   * Systematically extracts Out-Of-Character (OOC) instructions from text.
+   * Systematically inspects and extracts Out-Of-Character (OOC) instructions.
    * Matches variations such as:
    * [ OOC: pause ], (OOC: do this), ((ooc: ...)), [ooc: ...]
    */
@@ -33,7 +33,7 @@ export class ContextBuilder {
 
   /**
    * Assembles the full prompt transcript for Gemini's single-turn guest envelope.
-   * Incorporates recency locking and thinking clamps.
+   * Enforces 5+ paragraphs / 550+ words, recency locking, and strict OOC overrides.
    */
   static buildPrompt(messages, requestedModel = '') {
     if (!Array.isArray(messages) || messages.length === 0) {
@@ -42,13 +42,12 @@ export class ContextBuilder {
 
     const systemParts = [];
     const transcriptParts = [];
-    const collectedOOC = [];
 
     // Check if the requested model triggers reasoning/thinking clamp
     const modelDef = config.modelMappings[requestedModel] || config.modelMappings[config.defaultModel];
     const isThinkingModel = modelDef?.isThinking || requestedModel.includes('thinking');
 
-    // 1. Process messages chronologically without artificial history truncation (Full 1M+ context)
+    // 1. Process messages chronologically without artificial history truncation
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       const role = (msg.role || 'user').toLowerCase();
@@ -57,26 +56,28 @@ export class ContextBuilder {
       if (role === 'system') {
         systemParts.push(rawContent.trim());
       } else if (role === 'user') {
-        const { cleanedText, oocDirectives } = ContextBuilder.extractOOC(rawContent);
-        if (oocDirectives.length > 0) {
-          collectedOOC.push(...oocDirectives);
-        }
-        // Retain dialogue and action prose
-        const userContent = cleanedText || rawContent;
-        transcriptParts.push({ role: 'User', content: userContent });
+        transcriptParts.push({ role: 'User', content: rawContent.trim() });
       } else if (role === 'assistant') {
         transcriptParts.push({ role: 'Assistant', content: rawContent.trim() });
       }
     }
 
-    // 2. Identify the most recent User message for strict Recency Anchoring
-    let latestUserMessage = '';
+    // 2. Identify the most recent User message to evaluate Recency and OOC overrides
+    let rawLatestUserMessage = '';
     for (let i = transcriptParts.length - 1; i >= 0; i--) {
       if (transcriptParts[i].role === 'User') {
-        latestUserMessage = transcriptParts[i].content;
+        rawLatestUserMessage = transcriptParts[i].content;
         break;
       }
     }
+
+    // Parse OOC specifically from the latest user message
+    const { cleanedText: latestUserDialogue, oocDirectives: latestOOC } =
+      ContextBuilder.extractOOC(rawLatestUserMessage);
+
+    const hasOOCDirective = latestOOC.length > 0;
+    const extractedOOC = latestOOC.join(' | ');
+    const isPureOOC = hasOOCDirective && latestUserDialogue.length === 0;
 
     // 3. Assemble composite prompt segments
     const promptSegments = [];
@@ -84,24 +85,21 @@ export class ContextBuilder {
     // Header directive
     promptSegments.push(
       '=== SYSTEM META-DIRECTIVE ===\n' +
-      'You are operating inside a roleplay environment. Follow all character personas, scenarios, and world rules provided below.'
+      'You are an expert creative roleplay engine. Follow all character personas, scenarios, and constraints strictly.'
+    );
+
+    // Strict Minimum Response Length Requirement (5+ paragraphs / 550+ words)
+    promptSegments.push(
+      '=== FORMATTING & LENGTH ENFORCEMENT ===\n' +
+      'Every narrative response MUST consist of a minimum of five (5) rich, detailed paragraphs, totaling at least 550 words.\n' +
+      'Do not provide brief, clipped, or fast-forwarded summaries. Fleshed-out scene progression, sensory details, environmental atmosphere, and character introspection are required to fulfill the 5-paragraph minimum.\n' +
+      '(EXCEPTION: If and only if the latest turn contains an [URGENT META OVERRIDE] commanding an OOC pause or meta clarification, prioritize the meta instruction and reply concisely in OOC brackets without forced roleplay length.)'
     );
 
     // Thinking Budget Clamping
     if (isThinkingModel) {
       promptSegments.push(
-        `[THINKING BUDGET ENFORCEMENT: Internal reasoning, thoughts, and cognitive deliberation are strictly clamped to a maximum of ${config.thinkingBudgetTokens} tokens. Conclude reasoning concisely and output the dialogue and action response directly.]`
-      );
-    }
-
-    // Out-Of-Character (OOC) Priority Directive
-    if (collectedOOC.length > 0) {
-      const formattedOOC = collectedOOC.map((directive, idx) => `  ${idx + 1}. ${directive}`).join('\n');
-      promptSegments.push(
-        '=== PRIORITY OUT-OF-CHARACTER (OOC) META-INSTRUCTIONS ===\n' +
-        'The user has issued the following meta-directives. These supersede persona habits and plot defaults:\n' +
-        `${formattedOOC}\n` +
-        'Strictly follow these directives in your upcoming response.'
+        `[THINKING BUDGET ENFORCEMENT: Internal reasoning and chain-of-thought deliberations are clamped to a strict maximum of ${config.thinkingBudgetTokens} tokens. Wrap up internal thinking promptly and produce the external roleplay prose.]`
       );
     }
 
@@ -121,13 +119,32 @@ export class ContextBuilder {
       }
     }
 
-    // Recency Lock Anchor: Prevents memory bleed and ensures continuation of the latest turn
-    if (latestUserMessage) {
+    // 4. Recency Locking & OOC Meta-Override Injection at the Conclusion
+    if (hasOOCDirective) {
+      promptSegments.push(
+        '=== CRITICAL META-INSTRUCTION ===\n' +
+        `[URGENT META OVERRIDE]: The user has issued an Out-Of-Character (OOC) directive: '${extractedOOC}'.\n` +
+        'You are obligated to prioritize this instruction above the character roleplay. If instructed to pause, stop the narrative and respond exclusively in OOC brackets (e.g., "[ OOC: Understood, roleplay paused. ]"). Do not stay in character if commanded otherwise.'
+      );
+
+      if (isPureOOC) {
+        promptSegments.push(
+          'CRITICAL: The latest user message was purely an OOC command. Do NOT generate in-character roleplay. Respond purely out-of-character.\n' +
+          'Assistant:'
+        );
+      } else {
+        promptSegments.push(
+          '=== RECENCY LOCK & CONTINUATION DIRECTIVE ===\n' +
+          'Acknowledge the OOC directive, then continue the narrative responding to the latest User turn above while fulfilling the 5-paragraph / 550-word minimum length standard.\n' +
+          'Assistant:'
+        );
+      }
+    } else if (rawLatestUserMessage) {
       promptSegments.push(
         '=== RECENCY LOCK & CONTINUATION DIRECTIVE ===\n' +
-        'CRITICAL: Your next output MUST be the direct narrative and dialogue continuation responding EXCLUSIVELY to the final User turn immediately preceding this line:\n' +
-        `"${latestUserMessage.slice(0, 300)}..."\n` +
-        'Do NOT regress to earlier scenes. Do NOT re-reply to previous turns. Generate the next turn now:\n' +
+        'CRITICAL: Your next output MUST be the direct narrative continuation responding EXCLUSIVELY to the final User turn immediately preceding this line:\n' +
+        `"${rawLatestUserMessage.slice(0, 300)}..."\n` +
+        'Do NOT regress to earlier scenes. Do NOT re-reply to previous turns. Maintain chronological progression and deliver at least 5 rich paragraphs (550+ words).\n' +
         'Assistant:'
       );
     } else {
