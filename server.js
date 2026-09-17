@@ -1,9 +1,10 @@
 /**
- * server.js
+ * server.js (v1.1 Update)
  * Native Node.js v26 ECMAScript Module HTTP server.
- * Standard OpenAI API endpoints:
- *   - GET  /v1/models
- *   - POST /v1/chat/completions (supports SSE stream: true & standard JSON)
+ * Features:
+ *   - Real-time ANSI terminal logging for incoming requests, success dispatches, and session rotations.
+ *   - Standard OpenAI API endpoints (/v1/models, /v1/chat/completions).
+ *   - Stream and JSON completion handling with automatic session error recovery.
  */
 
 import http from 'node:http';
@@ -13,26 +14,70 @@ import { sessionPool } from './sessionPool.js';
 import { ContextBuilder } from './contextBuilder.js';
 import { GeminiClient } from './geminiClient.js';
 
-// Apply standard Cross-Origin Resource Sharing (CORS) headers
+// ANSI Color Palette with automatic TTY fallback
+const isTTY = Boolean(process.stdout.isTTY || process.env.TERM);
+const c = {
+  reset: isTTY ? '\x1b[0m' : '',
+  bold: isTTY ? '\x1b[1m' : '',
+  dim: isTTY ? '\x1b[90m' : '',
+  green: isTTY ? '\x1b[32m' : '',
+  yellow: isTTY ? '\x1b[33m' : '',
+  cyan: isTTY ? '\x1b[36m' : '',
+  magenta: isTTY ? '\x1b[35m' : '',
+  red: isTTY ? '\x1b[31m' : '',
+  blue: isTTY ? '\x1b[34m' : ''
+};
+
+function getTimestamp() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function logIncoming(model, isStream) {
+  const ts = getTimestamp();
+  console.log(
+    `${c.dim}[${ts}]${c.reset} ${c.yellow}${c.bold}[INCOMING]${c.reset} Request received from JanitorAI -> Model: ${c.cyan}${model}${c.reset} | Stream: ${c.magenta}${isStream}${c.reset}`
+  );
+}
+
+function logSuccess(turnCount) {
+  const ts = getTimestamp();
+  console.log(
+    `${c.dim}[${ts}]${c.reset} ${c.green}${c.bold}[SUCCESS]${c.reset} Completed response dispatched to JanitorAI (${turnCount} turns in context)`
+  );
+}
+
+function logRotate() {
+  const ts = getTimestamp();
+  console.log(
+    `${c.dim}[${ts}]${c.reset} ${c.blue}${c.bold}[INFO]${c.reset} Rotating to fresh Gemini guest session...`
+  );
+}
+
+// Hook session rotator to display console logs when invalidations trigger
+const originalInvalidate = sessionPool.invalidateSession.bind(sessionPool);
+sessionPool.invalidateSession = (session) => {
+  logRotate();
+  return originalInvalidate(session);
+};
+
 function applyCors(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-ID, X-Requested-With');
 }
 
-// Send standard JSON response
 function sendJson(res, statusCode, data) {
   res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(data));
 }
 
-// Parse incoming HTTP request body asynchronously
 async function readBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
     req.on('data', (chunk) => {
       body += chunk;
-      // Prevent unbounded memory payloads (100MB max)
       if (body.length > 100 * 1024 * 1024) {
         reject(new Error('Request entity too large'));
       }
@@ -42,7 +87,6 @@ async function readBody(req) {
   });
 }
 
-// Server request router
 const server = http.createServer(async (req, res) => {
   applyCors(req, res);
 
@@ -109,12 +153,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Isolate sessions per conversation using header or generated client hash
+    const turnCount = messages.length;
+    logIncoming(model, stream);
+
     const conversationId =
       req.headers['x-session-id'] ||
       crypto.createHash('sha256').update(JSON.stringify(messages.slice(0, 2))).digest('hex');
 
-    // Build the sanitized, recency-locked, and budget-clamped prompt
     const finalPrompt = ContextBuilder.buildPrompt(messages, model);
     const completionId = `chatcmpl-${crypto.randomUUID()}`;
     const createdTimestamp = Math.floor(Date.now() / 1000);
@@ -137,7 +182,6 @@ const server = http.createServer(async (req, res) => {
       });
 
       try {
-        // Send initial chunk containing the role delta
         const initialChunk = {
           id: completionId,
           object: 'chat.completion.chunk',
@@ -175,7 +219,6 @@ const server = http.createServer(async (req, res) => {
         }
 
         if (!clientDisconnected) {
-          // Final terminating chunk with finish_reason: 'stop'
           const stopChunk = {
             id: completionId,
             object: 'chat.completion.chunk',
@@ -191,9 +234,10 @@ const server = http.createServer(async (req, res) => {
           };
           res.write(`data: ${JSON.stringify(stopChunk)}\n\n`);
           res.write('data: [DONE]\n\n');
+          logSuccess(turnCount);
         }
       } catch (streamErr) {
-        console.error(`[Server] Streaming fault: ${streamErr.message}`);
+        console.error(`${c.red}[ERROR] Streaming fault: ${streamErr.message}${c.reset}`);
         if (!clientDisconnected) {
           const errPayload = {
             error: {
@@ -216,7 +260,6 @@ const server = http.createServer(async (req, res) => {
     try {
       const completionText = await GeminiClient.completeText(finalPrompt, model, sessionPool, conversationId);
 
-      // Simple heuristic token count estimation
       const estimatedPromptTokens = Math.ceil(finalPrompt.length / 4);
       const estimatedCompletionTokens = Math.ceil(completionText.length / 4);
 
@@ -243,8 +286,9 @@ const server = http.createServer(async (req, res) => {
       };
 
       sendJson(res, 200, responseBody);
+      logSuccess(turnCount);
     } catch (completeErr) {
-      console.error(`[Server] Non-streaming completion failure: ${completeErr.message}`);
+      console.error(`${c.red}[ERROR] Non-streaming completion failure: ${completeErr.message}${c.reset}`);
       sendJson(res, 502, {
         error: {
           message: `Gemini Upstream Failed: ${completeErr.message}`,
@@ -256,24 +300,23 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 404 Route handler
   sendJson(res, 404, {
     error: { message: `Endpoint not found: ${pathname}`, type: 'invalid_request_error', code: 404 }
   });
 });
 
-// Launch server & prewarm session pool
 server.listen(config.port, config.host, async () => {
-  console.log('====================================================');
-  console.log('       ASRIEL-PROXY-GEMINI : PRODUCTION READY       ');
-  console.log('====================================================');
+  console.log(`${c.cyan}====================================================${c.reset}`);
+  console.log(`${c.cyan}${c.bold}     ASRIEL-PROXY-GEMINI (v1.1) : ONLINE            ${c.reset}`);
+  console.log(`${c.cyan}====================================================${c.reset}`);
   console.log(`[Host Binding]     : http://${config.host}:${config.port}`);
   console.log(`[JanitorAI URL]    : http://localhost:${config.port}/v1`);
   console.log(`[Default Model]    : ${config.defaultModel}`);
+  console.log(`[Length Standards] : 5+ Paragraphs / 550+ Words Minimum`);
   console.log(`[Thinking Budget]  : ${config.thinkingBudgetTokens} tokens`);
-  console.log(`[Zero-Key Mode]    : 100% Free Gemini Guest Sessions`);
+  console.log(`[Logging Engine]   : Real-Time ANSI Visual Feed Active`);
   console.log('----------------------------------------------------');
 
   await sessionPool.initialize();
-  console.log('[System] Service ready to accept roleplay requests.');
+  console.log(`${c.green}[System] Ready to serve JanitorAI roleplay sessions.${c.reset}`);
 });
