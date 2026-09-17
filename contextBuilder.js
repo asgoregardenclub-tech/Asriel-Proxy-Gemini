@@ -133,18 +133,17 @@ export class ContextBuilder {
     }
 
     // =========================================================================
-    // CASE B: NORMAL IN-CHARACTER ROLEPLAY (5+ Paragraphs / 550+ Words Mandatory)
+    // CASE B: NORMAL IN-CHARACTER ROLEPLAY
     // =========================================================================
     promptSegments.push(
       `=== SYSTEM META-DIRECTIVE ===\n` +
       `You are an expert creative roleplay engine. Follow all character personas, scenarios, and constraints strictly.`
     );
 
-    // Enforce 5+ Paragraphs & 550+ Words
     promptSegments.push(
       `=== FORMATTING & LENGTH ENFORCEMENT ===\n` +
-      `Every narrative response MUST consist of a minimum of five (5) rich, detailed paragraphs, totaling at least 550 words.\n` +
-      `Do not provide brief, clipped, or fast-forwarded summaries. Fleshed-out scene progression, sensory details, environmental atmosphere, and character introspection are required to fulfill the 5-paragraph minimum.`
+      `Every narrative response MUST consist of a minimum of five 3 rich, detailed paragraphs, totaling at least 350 to 500 words minimum, minimum suggests you can go past, but you cannot go below.\n` +
+      `Do not provide brief, clipped, or fast-forwarded summaries. Fleshed-out scene progression, sensory details, environmental atmosphere, characters may go past the 5 paragraph threshold depending on if the scene consist of more than one person.`
     );
 
     if (isThinkingModel) {
