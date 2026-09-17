@@ -1,0 +1,24 @@
+{
+  "name": "asriel-proxy-gemini",
+  "version": "1.0.0",
+  "description": "Zero-API-key OpenAI-compatible reverse proxy for Google Gemini Guest Web sessions",
+  "type": "module",
+  "main": "server.js",
+  "engines": {
+    "node": ">=26.0.0"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "gemini",
+    "reverse-proxy",
+    "janitorai",
+    "openai-api",
+    "termux",
+    "roleplay"
+  ],
+  "author": "Asriel Engineering",
+  "license": "MIT",
+  "dependencies": {}
+}
