@@ -1,5 +1,5 @@
 /**
- * contextBuilder.js (v1.1.2 Hotfix)
+ * contextBuilder.js (v1.1.3 Hotfix)
  * Multi-turn context formatter, recency anchoring engine, strict OOC co-author mode,
  * thinking budget enforcement, and conditional 5+ paragraph / 550+ word enforcement.
  */
@@ -93,40 +93,40 @@ export class ContextBuilder {
     // =========================================================================
     if (isOOCMode) {
       promptSegments.push(
-        '=== SYSTEM META-DIRECTIVE: OUT-OF-CHARACTER (OOC) MODE ===\n' +
-        'The user has stepped OUT OF CHARACTER to speak with you directly as the AI Co-Author / Assistant.\n' +
-        'CRITICAL INSTRUCTIONS FOR THIS TURN:\n' +
-        '1. IN-CHARACTER ROLEPLAY IS SUSPENDED. You are strictly forbidden from writing as the character persona.\n' +
-        '2. Speak EXCLUSIVELY as the AI Co-Author/Storyteller in Out-Of-Character brackets: [ OOC: ... ].\n' +
-        '3. THOROUGHLY FULFILL THE USER\'S REQUEST: If asked for a summary, provide a comprehensive, structured in-depth summary of the entire roleplay transcript. If asked a question or given a pause command, answer it completely.\n' +
-        '4. Do NOT enforce narrative 5-paragraph roleplay constraints. Deliver whatever length is necessary to answer the user\'s OOC prompt.\n' +
-        '5. Do NOT say "resuming narrative" and do NOT output any character dialogue.'
+        `=== SYSTEM META-DIRECTIVE: OUT-OF-CHARACTER (OOC) MODE ===\n` +
+        `The user has stepped OUT OF CHARACTER to speak with you directly as the AI Co-Author / Assistant.\n` +
+        `CRITICAL INSTRUCTIONS FOR THIS TURN:\n` +
+        `1. IN-CHARACTER ROLEPLAY IS SUSPENDED. You are strictly forbidden from writing as the character persona.\n` +
+        `2. Speak EXCLUSIVELY as the AI Co-Author/Storyteller in Out-Of-Character brackets: [ OOC: ... ].\n` +
+        `3. THOROUGHLY FULFILL THE USER'S REQUEST: If asked for a summary, provide a comprehensive, structured in-depth summary of the entire roleplay transcript. If asked a question or given a pause command, answer it completely.\n` +
+        `4. Do NOT enforce narrative 5-paragraph roleplay constraints. Deliver whatever length is necessary to answer the user's OOC prompt.\n` +
+        `5. Do NOT say "resuming narrative" and do NOT output any character dialogue.`
       );
 
       // Disarm the character card by marking it strictly as reference material
       if (systemParts.length > 0) {
         promptSegments.push(
-          '=== REFERENCE MATERIAL (FOR CONTEXT ONLY - DO NOT ADOPT PERSONA) ===\n' +
+          `=== REFERENCE MATERIAL (FOR CONTEXT ONLY - DO NOT ADOPT PERSONA) ===\n` +
           systemParts.join('\n\n')
         );
       }
 
       if (transcriptParts.length > 0) {
-        promptSegments.push('=== CHAT TRANSCRIPT TO REFERENCE ===');
+        promptSegments.push(`=== CHAT TRANSCRIPT TO REFERENCE ===`);
         for (const turn of transcriptParts) {
           promptSegments.push(`${turn.role}: ${turn.content}`);
         }
       }
 
       promptSegments.push(
-        '=== CRITICAL OOC EXECUTION INSTRUCTION ===\n' +
+        `=== CRITICAL OOC EXECUTION INSTRUCTION ===\n` +
         `User OOC Directive: "${extractedOOC}"\n\n` +
-        'MANDATORY RULES:\n' +
-        '- You are the AI Assistant / Co-Writer. Fulfill the user\'s directive completely and thoroughly.\n' +
-        '- If a full/in-depth summary is requested, synthesize the entire transcript above into a detailed summary.\n' +
-        '- Do NOT write as {{char}}. Do NOT generate story prose.\n' +
-        '- Enclose your entire response inside [ OOC: ... ].\n\n' +
-        'Assistant:'
+        `MANDATORY RULES:\n` +
+        `- You are the AI Assistant / Co-Writer. Fulfill the user's directive completely and thoroughly.\n` +
+        `- If a full/in-depth summary is requested, synthesize the entire transcript above into a detailed summary.\n` +
+        `- Do NOT write as {{char}}. Do NOT generate story prose.\n` +
+        `- Enclose your entire response inside [ OOC: ... ].\n\n` +
+        `Assistant:`
       );
 
       return promptSegments.join('\n\n');
@@ -136,15 +136,15 @@ export class ContextBuilder {
     // CASE B: NORMAL IN-CHARACTER ROLEPLAY (5+ Paragraphs / 550+ Words Mandatory)
     // =========================================================================
     promptSegments.push(
-      '=== SYSTEM META-DIRECTIVE ===\n' +
-      'You are an expert creative roleplay engine. Follow all character personas, scenarios, and constraints strictly.'
+      `=== SYSTEM META-DIRECTIVE ===\n` +
+      `You are an expert creative roleplay engine. Follow all character personas, scenarios, and constraints strictly.`
     );
 
     // Enforce 5+ Paragraphs & 550+ Words
     promptSegments.push(
-      '=== FORMATTING & LENGTH ENFORCEMENT ===\n' +
-      'Every narrative response MUST consist of a minimum of five (5) rich, detailed paragraphs, totaling at least 550 words.\n' +
-      'Do not provide brief, clipped, or fast-forwarded summaries. Fleshed-out scene progression, sensory details, environmental atmosphere, and character introspection are required to fulfill the 5-paragraph minimum.'
+      `=== FORMATTING & LENGTH ENFORCEMENT ===\n` +
+      `Every narrative response MUST consist of a minimum of five (5) rich, detailed paragraphs, totaling at least 550 words.\n` +
+      `Do not provide brief, clipped, or fast-forwarded summaries. Fleshed-out scene progression, sensory details, environmental atmosphere, and character introspection are required to fulfill the 5-paragraph minimum.`
     );
 
     if (isThinkingModel) {
@@ -154,11 +154,11 @@ export class ContextBuilder {
     }
 
     if (systemParts.length > 0) {
-      promptSegments.push('=== CHARACTER DEFINITION & SCENARIO ===\n' + systemParts.join('\n\n'));
+      promptSegments.push(`=== CHARACTER DEFINITION & SCENARIO ===\n` + systemParts.join('\n\n'));
     }
 
     if (transcriptParts.length > 0) {
-      promptSegments.push('=== CONVERSATION LOG ===');
+      promptSegments.push(`=== CONVERSATION LOG ===`);
       for (const turn of transcriptParts) {
         promptSegments.push(`${turn.role}: ${turn.content}`);
       }
@@ -167,22 +167,22 @@ export class ContextBuilder {
     // Mixed Turn: e.g. `*smiles* [ OOC: Make him angry ]`
     if (hasOOCDirective) {
       promptSegments.push(
-        '=== OUT-OF-CHARACTER META-DIRECTIVE ===\n' +
-        `The user provided an out-of-character behavioral directive: "${extractedOOC}".\n' +
-        'Incorporate this directive into the character\'s actions and behavior while maintaining the narrative.'
+        `=== OUT-OF-CHARACTER META-DIRECTIVE ===\n` +
+        `The user provided an out-of-character behavioral directive: "${extractedOOC}".\n` +
+        `Incorporate this directive into the character's actions and behavior while maintaining the narrative.`
       );
     }
 
     if (rawLatestUserMessage) {
       promptSegments.push(
-        '=== RECENCY LOCK & CONTINUATION DIRECTIVE ===\n' +
-        'CRITICAL: Your next output MUST be the direct narrative continuation responding EXCLUSIVELY to the final User turn immediately preceding this line:\n' +
+        `=== RECENCY LOCK & CONTINUATION DIRECTIVE ===\n` +
+        `CRITICAL: Your next output MUST be the direct narrative continuation responding EXCLUSIVELY to the final User turn immediately preceding this line:\n` +
         `"${rawLatestUserMessage.slice(0, 300)}..."\n` +
-        'Do NOT regress to earlier scenes. Do NOT re-reply to previous turns. Maintain chronological progression and deliver at least 5 rich paragraphs (550+ words).\n\n' +
-        'Assistant:'
+        `Do NOT regress to earlier scenes. Do NOT re-reply to previous turns. Maintain chronological progression and deliver at least 5 rich paragraphs (550+ words).\n\n` +
+        `Assistant:`
       );
     } else {
-      promptSegments.push('Assistant:');
+      promptSegments.push(`Assistant:`);
     }
 
     return promptSegments.join('\n\n');
