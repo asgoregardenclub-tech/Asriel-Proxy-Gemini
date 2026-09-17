@@ -312,7 +312,6 @@ server.listen(config.port, config.host, async () => {
   console.log(`[Host Binding]     : http://${config.host}:${config.port}`);
   console.log(`[JanitorAI URL]    : http://localhost:${config.port}/v1`);
   console.log(`[Default Model]    : ${config.defaultModel}`);
-  console.log(`[Length Standards] : 5+ Paragraphs / 550+ Words Minimum`);
   console.log(`[Thinking Budget]  : ${config.thinkingBudgetTokens} tokens`);
   console.log(`[Logging Engine]   : Real-Time ANSI Visual Feed Active`);
   console.log('----------------------------------------------------');
