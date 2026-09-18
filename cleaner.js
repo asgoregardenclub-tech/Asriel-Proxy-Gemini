@@ -1,31 +1,27 @@
 /**
  * cleaner.js
- * Real-time, chunk-boundary safe stream buffer and static output sanitizer.
- * Strips Google internal XML/LMDX tags, citation anchors, and markdown/raw links.
+ * Stream-safe XML tag stripper and link suppressor.
+ * Buffers partial tags and links across SSE chunk boundaries.
  */
 
 export class StreamCleaner {
   constructor() {
     this.buffer = '';
-    // Maximum characters to delay across a chunk boundary for an unclosed tag/link
-    this.maxLookahead = 400;
+    this.maxLookahead = 350;
   }
 
-  /**
-   * Cleans a complete text block statically (for non-streaming completions or final passes).
-   */
   static cleanText(text) {
     if (!text || typeof text !== 'string') return '';
 
     let cleaned = text;
 
-    // 1. Remove Google internal code interpreter & stdout artifacts
+    // Remove Google code execution artifacts
     cleaned = cleaned.replace(
       /```(?:python|javascript|text)\?code_(?:reference|stdout)&code_event_index=\d+[\s\S]*?```\n?/g,
       ''
     );
 
-    // 2. Remove LMDX Interactive Containers and System UI tags along with internal content
+    // Strip Google internal LMDX tags and contents
     cleaned = cleaned.replace(/<ElicitationsGroup\b[^>]*>[\s\S]*?<\/ElicitationsGroup>/gi, '');
     cleaned = cleaned.replace(/<FollowUp\b[^>]*>[\s\S]*?<\/FollowUp>/gi, '');
     cleaned = cleaned.replace(/<thought\b[^>]*>[\s\S]*?<\/thought>/gi, '');
@@ -36,42 +32,34 @@ export class StreamCleaner {
     cleaned = cleaned.replace(/<Carousel\b[^>]*>[\s\S]*?<\/Carousel>/gi, '');
     cleaned = cleaned.replace(/<GenerateWidget\b[^>]*>[\s\S]*?<\/GenerateWidget>/gi, '');
 
-    // 3. Remove standalone, empty, or self-closing tags
-    cleaned = cleaned.replace(/<\/?(?:ElicitationsGroup|Elicitation|FollowUp|thought|grounding-citation|citation_sources|Sequence|Step|Timeline|TimelineEvent|Carousel|GenerateWidget)\b[^>]*\/?>/gi, '');
+    // Strip standalone or empty tags
+    cleaned = cleaned.replace(
+      /<\/?(?:ElicitationsGroup|Elicitation|FollowUp|thought|grounding-citation|citation_sources|Sequence|Step|Timeline|TimelineEvent|Carousel|GenerateWidget)\b[^>]*\/?>/gi,
+      ''
+    );
 
-    // 4. Remove Google internal citation metadata [cite: ...] or [citation: ...]
+    // Strip Google internal citation tags
     cleaned = cleaned.replace(/\[\s*(?:cite|citation)\s*:\s*[^\]]+\]/gi, '');
-
-    // 5. Remove search index citation anchors: e.g. [1](https://google.com/...)
     cleaned = cleaned.replace(/\[\d+\]\(https?:\/\/[^\s\)]+\)/gi, '');
 
-    // 6. Link Suppression: Convert standard markdown links [Anchor Text](https://...) -> "Anchor Text"
+    // Link suppression: keep anchor text, remove URL
     cleaned = cleaned.replace(/\[([^\]]+)\]\(https?:\/\/[^\s\)]+\)/gi, '$1');
 
-    // 7. Link Suppression: Strip raw external URLs completely
+    // Strip raw external URLs
     cleaned = cleaned.replace(/https?:\/\/[^\s<>"'`)]+/gi, '');
 
-    // 8. Normalise excessive vertical spacing created by stripped blocks (max 2 consecutive newlines)
+    // Normalize spacing
     cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
 
     return cleaned;
   }
 
-  /**
-   * Ingests an incoming raw stream chunk, buffers boundary risk segments,
-   * and yields sanitized text safe for immediate SSE forwarding.
-   */
   process(chunk) {
     if (!chunk) return '';
-
     this.buffer += chunk;
 
-    // Determine the safe substring cut-off point where no partial tag or link begins
     const safeIndex = this.findSafeBoundary(this.buffer);
-
-    if (safeIndex <= 0) {
-      return '';
-    }
+    if (safeIndex <= 0) return '';
 
     const processable = this.buffer.slice(0, safeIndex);
     this.buffer = this.buffer.slice(safeIndex);
@@ -79,32 +67,24 @@ export class StreamCleaner {
     return StreamCleaner.cleanText(processable);
   }
 
-  /**
-   * Scans the buffer for unclosed tags (<), markdown link triggers ([), or URL schemas (http)
-   * that might be split across SSE chunks.
-   */
   findSafeBoundary(str) {
     const len = str.length;
     if (len === 0) return 0;
-
     let boundary = len;
 
-    // Check for an unclosed XML/HTML tag '<'
+    // Check for open '<'
     const lastOpenTag = str.lastIndexOf('<');
     if (lastOpenTag !== -1) {
       const lastCloseTag = str.lastIndexOf('>');
       if (lastCloseTag < lastOpenTag) {
-        // Tag is open and unclosed. Is it a plausible tag start or just a standalone comparison?
         const prospective = str.slice(lastOpenTag + 1);
-        if (/^[a-zA-Z0-9_\-\/]/i.test(prospective)) {
-          if (len - lastOpenTag < this.maxLookahead) {
-            boundary = Math.min(boundary, lastOpenTag);
-          }
+        if (/^[a-zA-Z0-9_\-\/]/i.test(prospective) && len - lastOpenTag < this.maxLookahead) {
+          boundary = Math.min(boundary, lastOpenTag);
         }
       }
     }
 
-    // Check for an unclosed Markdown link '[' without matching ')'
+    // Check for open markdown link '['
     const lastOpenBracket = str.lastIndexOf('[');
     if (lastOpenBracket !== -1) {
       const lastCloseParen = str.lastIndexOf(')');
@@ -113,7 +93,7 @@ export class StreamCleaner {
       }
     }
 
-    // Check for trailing protocol scheme that might be cut mid-URL
+    // Check for open URL scheme
     const httpIdx = Math.max(str.lastIndexOf('http://'), str.lastIndexOf('https://'));
     if (httpIdx !== -1) {
       const afterHttp = str.slice(httpIdx);
@@ -125,9 +105,6 @@ export class StreamCleaner {
     return boundary;
   }
 
-  /**
-   * Flushes any remaining characters buffered at the close of the stream.
-   */
   flush() {
     if (!this.buffer) return '';
     const remainder = StreamCleaner.cleanText(this.buffer);
