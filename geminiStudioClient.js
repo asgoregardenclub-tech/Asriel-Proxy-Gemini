@@ -1,9 +1,10 @@
 /**
  * geminiStudioClient.js
- * Direct Google AI Studio API client with Multi-Key Pool & 429 Failover.
- * - Supports new AQ. and legacy AIza keys via x-goog-api-key header
- * - BLOCK_NONE safety filters on the 4 supported categories
- * - Automatic empty content part filtering to avoid 400 Bad Request
+ * Direct Google AI Studio API client targeting Gemini 3.8 Flash.
+ * - Auto-routes to gemini-3.8-flash
+ * - Multi-Key Pool & 429 Failover
+ * - BLOCK_NONE safety filters
+ * - Automatic empty content part filtering
  */
 
 import { config } from './config.js';
@@ -61,7 +62,6 @@ export class StudioKeyManager {
 export const studioKeyManager = new StudioKeyManager();
 
 export class GeminiStudioClient {
-  // Only the 4 supported categories accept BLOCK_NONE without 400 Bad Request
   static getSafetySettings() {
     return [
       { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
@@ -73,9 +73,8 @@ export class GeminiStudioClient {
 
   static async *streamCompletion(studioPayload, availableKeys, temperature = 0.8) {
     let lastError = null;
-    const maxAttempts = Math.max(availableKeys.length * 2, 3);
+    const maxAttempts = Math.max(availableKeys.length * 2, 4);
 
-    // Sanitize contents: remove any empty parts to prevent 400 Bad Request
     const rawContents = Array.isArray(studioPayload.contents) ? studioPayload.contents : [];
     const validContents = rawContents
       .map((item) => ({
@@ -88,7 +87,6 @@ export class GeminiStudioClient {
       validContents.push({ role: 'user', parts: [{ text: 'Hello' }] });
     }
 
-    // Ensure contents starts with 'user'
     if (validContents[0].role === 'model') {
       validContents.unshift({ role: 'user', parts: [{ text: '(Roleplay Context)' }] });
     }
@@ -102,7 +100,6 @@ export class GeminiStudioClient {
       }
     };
 
-    // Attach system instruction if non-empty
     const sysText = studioPayload.systemInstruction?.parts?.[0]?.text?.trim();
     if (sysText) {
       requestBody.systemInstruction = {
@@ -110,13 +107,18 @@ export class GeminiStudioClient {
       };
     }
 
+    // Direct resolution: Target Gemini 3.8 Flash
+    let targetModelId = studioPayload.studioId || 'gemini-3.8-flash';
+    if (targetModelId.includes('2.5') || targetModelId.includes('2.0')) {
+      targetModelId = 'gemini-3.8-flash';
+    }
+
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const apiKey = studioKeyManager.getNextHealthyKey(availableKeys);
       if (!apiKey) throw new Error('No valid Google AI Studio API key provided.');
 
       const cleaner = new StreamCleaner();
-      const modelId = studioPayload.studioId || 'gemini-2.5-flash';
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:streamGenerateContent?alt=sse`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModelId}:streamGenerateContent?alt=sse`;
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), config.requestTimeoutMs);
@@ -143,8 +145,18 @@ export class GeminiStudioClient {
       // Handle 429 Rate Limit
       if (res.status === 429) {
         clearTimeout(timeoutId);
-        console.warn(`[Studio API] Key ...${apiKey.slice(-6)} hit 429 (Rate Limit). Rotating keys...`);
+        console.warn(`[Studio API] Key ...${apiKey.slice(-6)} hit 429. Rotating key...`);
         studioKeyManager.markCooldown(apiKey, 45000);
+        continue;
+      }
+
+      // If a model returns 404, fallback directly to gemini-3.8-flash
+      if (res.status === 404) {
+        clearTimeout(timeoutId);
+        const errText = await res.text();
+        console.warn(`[Studio API] Model '${targetModelId}' returned 404. Falling back to 'gemini-3.8-flash'...`);
+        targetModelId = 'gemini-3.8-flash';
+        lastError = new Error(`Model 404: ${errText}`);
         continue;
       }
 
@@ -198,7 +210,7 @@ export class GeminiStudioClient {
                     }
                   }
                 } catch (e) {
-                  // Skip partial frame
+                  // Partial frame skip
                 }
               }
             }
@@ -219,7 +231,7 @@ export class GeminiStudioClient {
       }
     }
 
-    throw lastError || new Error('All Google AI Studio keys exhausted or rejected.');
+    throw lastError || new Error('All Google AI Studio attempts exhausted.');
   }
 
   static async completeText(studioPayload, availableKeys, temperature = 0.8) {
