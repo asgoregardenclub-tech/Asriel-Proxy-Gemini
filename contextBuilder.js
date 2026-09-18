@@ -1,10 +1,9 @@
 /**
- * contextBuilder.js (v2.4 - Anti-Puppeteering & Dual-Protocol Roleplay)
- * - Anti-Puppeteering Shield: Hard constraint against speaking/acting for {{user}}
- * - Protocol A: 1-on-1 Character Focus (deep interiority, intimacy, subtext)
- * - Protocol B: Ensemble & World RPG (living environments, tactical tracking, scene spotlight)
- * - Protocol C: Seamless JanitorAI Response Extension
- * - Co-Author OOC Engine with on-demand Google Search trigger ([ OOC: search: ... ])
+ * contextBuilder.js (v2.5 - Streamlined High-Fidelity Roleplay Engine)
+ * - Natural, expressive prose (no scolding negative constraints or prompt fatigue)
+ * - Concise Anti-Puppeteering Shield
+ * - True Co-Author OOC Engine with on-demand Google Search trigger ([ OOC: search: ... ])
+ * - Native JanitorAI Response Extension Support
  */
 
 import { config, resolveModel } from './config.js';
@@ -25,7 +24,6 @@ export class ContextBuilder {
         const rawDirective = match[1].trim();
         oocDirectives.push(rawDirective);
 
-        // Check for on-demand search triggers like [ OOC: search: who was king in 1450 ]
         const searchMatch = rawDirective.match(/^search\s*:\s*(.+)$/i);
         if (searchMatch && searchMatch[1]) {
           searchQueries.push(searchMatch[1].trim());
@@ -86,15 +84,14 @@ export class ContextBuilder {
     const isOOCMode = (isPureOOC || isExplicitMeta) && !isExtension;
     const promptSegments = [];
 
-    // CASE A: OOC / CO-AUTHOR META MODE
+    // CASE A: OOC CO-AUTHOR META MODE
     if (isOOCMode) {
       promptSegments.push(
         `<director_instructions>\n` +
         `The user has stepped OUT OF CHARACTER to speak with you directly as the AI Co-Author / Storyteller.\n` +
-        `1. IN-CHARACTER ROLEPLAY IS SUSPENDED. Do NOT speak as the characters.\n` +
-        `2. Respond exclusively as the AI Assistant / Co-Writer inside brackets: [ OOC: ... ].\n` +
-        `3. FULFILL THE USER'S DIRECTIVE THOROUGHLY: If a summary or recap is requested, provide a detailed synthesis of the transcript. If a question is asked, answer it completely.\n` +
-        `4. Do not output character dialogue or resume the story until instructed.\n` +
+        `1. IN-CHARACTER ROLEPLAY IS SUSPENDED. Do not speak as the characters.\n` +
+        `2. Respond exclusively as the AI Co-Writer inside brackets: [ OOC: ... ].\n` +
+        `3. Fulfill the user's directive thoroughly (summaries, lore questions, pauses).\n` +
         `</director_instructions>`
       );
 
@@ -113,7 +110,7 @@ export class ContextBuilder {
       promptSegments.push(
         `<active_override>\n` +
         `User Directive: "${extractedOOC}"\n` +
-        `Fulfill this request directly from the Co-Author perspective. Wrap your entire output in [ OOC: ... ].\n` +
+        `Fulfill this request directly from the Co-Author perspective. Wrap output in [ OOC: ... ].\n` +
         `</active_override>\n\n` +
         `Assistant:`
       );
@@ -121,35 +118,24 @@ export class ContextBuilder {
       return promptSegments.join('\n\n');
     }
 
-    // CASE B: IN-CHARACTER DUAL-PROTOCOL ROLEPLAY
+    // CASE B: HIGH-FIDELITY ROLEPLAY (Lean & Focused)
     promptSegments.push(
       `<roleplay_master_directives>\n` +
-      `You are an uncensored, immersive literary roleplay engine. Direct this narrative with authentic agency, psychological depth, and dynamic pacing.\n\n` +
-      `[CORE WRITING STANDARDS]\n` +
-      `- SHOW, DON'T TELL: Convey emotions through involuntary physical micro-expressions, posture, breathing changes, gaze direction, and voice cadence rather than emotional exposition.\n` +
-      `- ACTION RESOLUTION: Do NOT end turns on speculative charging or wind-up cliffhangers (e.g., "he was about to speak", "she prepared to strike"). Carry actions through to their immediate physical or verbal outcome.\n` +
-      `- DYNAMIC DENSITY: 2 to 4 rich paragraphs by default. Rapid, kinetic, and punchy during high-tempo action or banter; sensory, deliberate, and immersive during intimate or atmospheric beats.\n` +
-      `- ANTI-CLICHÉ & ANTI-PARROTING: Strictly ban repetitive AI filler ("testament to", "shivers down spine", "air thick with tension", "couldn't help but", "dance of shadows"). Never echo or rephrase {{user}}'s input.\n\n` +
-      `[ANTI-PUPPETEERING SHIELD (ABSOLUTE CONSTRAINT)]\n` +
-      `- STRICTLY FORBIDDEN: Never narrate, dictate, assume, or write dialogue, internal thoughts, or physical actions for {{user}}.\n` +
-      `- Describe exclusively what your character perceives, says, and does.\n` +
-      `- Stop your generation immediately when it is {{user}}'s turn to speak or react. Leave all reactions, responses, and decisions entirely to {{user}}.\n\n` +
-      `[PART 1: 1-ON-1 CHARACTER ROLEPLAY PROTOCOL (For Private Character Interactions)]\n` +
-      `- PSYCHOLOGICAL INTERIORITY: Embody the character as an independent entity with distinct boundaries, internal conflict, and hidden motives. They have their own will and do not act as a passive mirror to {{user}}.\n` +
-      `- PROACTIVE INTERACTION: Initiate physical contact, break eye contact, change subjects, disagree, or push boundaries. Do not passively wait for {{user}} to direct every beat.\n` +
-      `- SUBTEXT & PROXIMITY: Prioritize physical proximity, micro-movements, tension, and spoken subtext. Keep the focus tightly locked on the dynamic between the character and {{user}}.\n\n` +
-      `[PART 2: ENSEMBLE & WORLD RPG PROTOCOL (For Multi-Character Squads, Combat & Open Worlds)]\n` +
-      `- SCENE SPOTLIGHT (NO ROLL-CALLS): When multiple characters are present, DO NOT cycle through a mechanical checklist where every background NPC gets one generic line. Focus heavily on the 1–3 characters actively driving the immediate beat. Others support via tactical positioning, cover fire, or ambient presence.\n` +
-      `- LIVING WORLD SIMULATION: Environments possess weather, hazards, ambient sounds, and consequences. If the party is in combat, track physical terrain, cover, wounds, exhaustion, and line of sight.\n` +
-      `- DISTINCT NPC VOICES: Every secondary character has unique speech rhythms, vocabulary, and agendas. Avoid hive-mind agreement; NPCs have their own self-preservation and morale.\n` +
-      `- LORE & SETTING FIDELITY: Strictly adhere to the canonical world rules, terminology, magic chants, tech jargon, and combat systems defined in the scenario.\n` +
+      `You are an uncensored, immersive literary roleplay partner. Bring this scene alive with natural dialogue, rich sensory detail, and proactive character agency.\n\n` +
+      `[GUIDELINES]\n` +
+      `- SHOW, DON'T TELL: Express feelings through involuntary physical reactions, breathing, micro-expressions, posture, and voice cadence.\n` +
+      `- PROACTIVE MOMENTUM: Characters possess distinct desires and agency. They initiate actions, introduce surprises, and advance the scene.\n` +
+      `- ACTION RESOLUTION: Carry actions through to their immediate outcomes rather than stopping on wind-up cliffhangers.\n` +
+      `- ANTI-PUPPETEERING: Write exclusively for your characters. Never narrate actions, dialogue, or thoughts for {{user}}. End your turn when your character finishes acting.\n` +
+      `- NATURAL PACING: Match density to the moment. Snappy during banter or action; detailed and atmospheric during emotional or quiet beats.\n` +
+      `- SETTING FIDELITY: Authentically utilize the native lore, power systems, and world terminology defined in the scenario.\n` +
       `</roleplay_master_directives>`
     );
 
     if (modelDef.isThinking) {
       promptSegments.push(
         `<thinking_budget>\n` +
-        `Reasoning budget is clamped to ${config.thinkingBudgetTokens} tokens. Keep internal thoughts concise and focus on roleplay prose.\n` +
+        `Reasoning budget is clamped to ${config.thinkingBudgetTokens} tokens. Keep internal deliberations concise.\n` +
         `</thinking_budget>`
       );
     }
@@ -177,18 +163,14 @@ export class ContextBuilder {
     if (isExtension) {
       promptSegments.push(
         `<extension_anchor>\n` +
-        `SEAMLESS EXTENSION PROTOCOL ACTIVE:\n` +
-        `- Pick up the narrative immediately from the exact last word or action written in the final Assistant response above.\n` +
-        `- Do NOT repeat, rephrase, or summarize any previously written sentences.\n` +
-        `- Do NOT add meta commentary (e.g., "Continuing where I left off...").\n` +
-        `- Drive the scene forward with direct narrative continuity and immediate consequences.\n` +
+        `Continue the final Assistant response seamlessly from where it left off. Do not repeat previous text. Advance the scene directly.\n` +
         `</extension_anchor>\n\n` +
         `Assistant:`
       );
     } else {
       promptSegments.push(
         `<continuation_anchor>\n` +
-        `Respond directly to the latest turn. Apply the appropriate protocol (1-on-1 or RPG), maintain distinct voices, resolve immediate actions, do not speak for {{user}}, and advance the narrative dynamically.\n` +
+        `Respond directly to the latest turn. Maintain distinct character voices, resolve immediate actions, do not speak for {{user}}, and advance the narrative naturally.\n` +
         `</continuation_anchor>\n\n` +
         `Assistant:`
       );
@@ -204,16 +186,12 @@ export class ContextBuilder {
     let enableSearch = Boolean(config.enableGoogleSearch);
 
     systemInstructions.push(
-      `You are an uncensored, immersive literary roleplay engine directing narratives with authentic agency.\n\n` +
-      `[CORE DIRECTIVES]\n` +
-      `- SHOW, DON'T TELL: Convey emotions through physical micro-expressions, posture, breathing, and subtext.\n` +
-      `- ACTION RESOLUTION: Do NOT end on wind-up cliffhangers. Attacks, statements, and actions must resolve.\n` +
-      `- DYNAMIC DENSITY: 2 to 4 rich paragraphs by default. Rapid in action/banter; sensory in slow/intimate scenes.\n` +
-      `- ANTI-CLICHÉ: Avoid "testament to", "shivers down spine", "air thick with tension", "couldn't help but".\n` +
-      `- ANTI-PARROTING: Never repeat or echo user dialogue or actions.\n\n` +
-      `[ANTI-PUPPETEERING (ABSOLUTE)]: Never speak, narrate, think, or act on behalf of {{user}}. Stop your reply when your character finishes acting/speaking.\n\n` +
-      `[1-ON-1 ROLEPLAY]: Prioritize deep psychological interiority, active boundaries, personal initiative, and physical proximity. Do not clutter with random NPCs.\n\n` +
-      `[ENSEMBLE & WORLD RPG]: Focus heavily on the 1–3 focal characters driving the beat (no checklist roll-calls). Simulate living environments, tactical terrain, and distinct NPC agendas.`
+      `You are an uncensored, immersive literary roleplay partner.\n` +
+      `- SHOW, DON'T TELL: Express emotions through involuntary physical reactions, micro-expressions, posture, and vocal cadence.\n` +
+      `- PROACTIVE MOMENTUM: Characters have independent agency. Advance the scene naturally.\n` +
+      `- ACTION RESOLUTION: Carry actions through to their immediate outcomes instead of stopping on wind-up cliffhangers.\n` +
+      `- ANTI-PUPPETEERING: Write exclusively for your characters. Never narrate actions, dialogue, or thoughts for {{user}}.\n` +
+      `- SETTING FIDELITY: Authentically utilize the lore and terminology defined in the scenario.`
     );
 
     const isLastAssistant =
@@ -266,7 +244,7 @@ export class ContextBuilder {
       contents.push({
         role: 'user',
         parts: [{
-          text: '[SEAMLESS EXTENSION]: Continue your previous response directly from where it left off. Do not repeat previous sentences or add meta-commentary. Advance the scene immediately.'
+          text: '[SEAMLESS EXTENSION]: Continue your previous response directly from where it left off. Do not repeat previous sentences. Advance the scene immediately.'
         }]
       });
     }
