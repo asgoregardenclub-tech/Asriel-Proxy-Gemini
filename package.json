@@ -1,7 +1,7 @@
 {
   "name": "asriel-proxy-gemini",
   "version": "2.5.0",
-  "description": "Production-Grade Hybrid OpenAI-Compatible Reverse Proxy for Google Gemini (AI Studio & Guest Web)",
+  "description": "Production Hybrid OpenAI-Compatible Reverse Proxy for Google Gemini (Google AI Studio & Guest Web)",
   "type": "module",
   "main": "server.js",
   "engines": {
