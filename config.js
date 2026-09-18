@@ -1,7 +1,6 @@
 /**
  * config.js
- * Centralized Configuration & Gemini Model Directory.
- * Supports latest Gemini 3.x, 2.5, and 2.0 architectures with safety and thinking parameter matrices.
+ * Central configuration and model registry for Gemini 3.x, 2.5, and 2.0/1.5 architectures.
  */
 
 export const config = {
@@ -32,7 +31,7 @@ export const config = {
 
   enableGoogleSearch: false,
 
-  // Automatically parse studio keys from standard environment variables
+  // Automatically read keys from standard environment variables
   studioApiKeys: [
     ...(process.env.GEMINI_API_KEY ? [process.env.GEMINI_API_KEY] : []),
     ...(process.env.GOOGLE_API_KEY ? [process.env.GOOGLE_API_KEY] : []),
@@ -44,7 +43,7 @@ export const config = {
 
   modelMappings: {
     // =========================================================================
-    // Gemini 3 Series (Uses thinkingLevel: minimal|low|medium|high, NO penalties)
+    // Gemini 3 Family (Uses thinkingLevel: minimal|low|medium|high; NO penalties)
     // =========================================================================
     'gemini-3.8-flash': {
       mode: 1,
@@ -52,7 +51,7 @@ export const config = {
       isThinking: false,
       studioId: 'gemini-3.8-flash',
       arch: 'gemini-3',
-      desc: 'Gemini 3.8 Flash (High Speed / Minimal Thinking)'
+      desc: 'Gemini 3.8 Flash (High-Speed / Minimal Reasoning)'
     },
     'gemini-3.8-flash-thinking': {
       mode: 2,
@@ -60,7 +59,7 @@ export const config = {
       isThinking: true,
       studioId: 'gemini-3.8-flash',
       arch: 'gemini-3',
-      desc: 'Gemini 3.8 Flash (Extended Reasoning / High Thinking)'
+      desc: 'Gemini 3.8 Flash (Deep Reasoning)'
     },
     'gemini-3.8-thinking': {
       mode: 2,
@@ -76,7 +75,7 @@ export const config = {
       isThinking: true,
       studioId: 'gemini-3.8-pro',
       arch: 'gemini-3',
-      desc: 'Gemini 3.8 Pro (Frontier Literary Engine)'
+      desc: 'Gemini 3.8 Pro (Frontier Complex Reasoning)'
     },
     'gemini-3.7-flash': {
       mode: 1,
@@ -132,7 +131,7 @@ export const config = {
       isThinking: false,
       studioId: 'gemini-3.5-flash-lite',
       arch: 'gemini-3',
-      desc: 'Gemini 3.5 Flash-Lite'
+      desc: 'Gemini 3.5 Flash Lite'
     },
     'gemini-3.1-pro': {
       mode: 3,
@@ -160,7 +159,7 @@ export const config = {
     },
 
     // =========================================================================
-    // Gemini 2.5 Series (Uses thinkingBudget: int, NO penalties)
+    // Gemini 2.5 Family (Uses thinkingBudget; NO penalties)
     // =========================================================================
     'gemini-2.5-flash': {
       mode: 1,
@@ -184,7 +183,7 @@ export const config = {
       isThinking: true,
       studioId: 'gemini-2.5-pro',
       arch: 'gemini-2.5',
-      desc: 'Gemini 2.5 Pro (Mandatory Reasoning)'
+      desc: 'Gemini 2.5 Pro (Adaptive Reasoning)'
     },
     'gemini-2.5-flash-lite': {
       mode: 1,
@@ -196,7 +195,7 @@ export const config = {
     },
 
     // =========================================================================
-    // Gemini 2.0 & 1.5 Legacy (Supports frequencyPenalty / presencePenalty)
+    // Legacy Models (Supports frequencyPenalty / presencePenalty)
     // =========================================================================
     'gemini-2.0-flash': {
       mode: 1,
@@ -224,7 +223,7 @@ export const config = {
     },
 
     // =========================================================================
-    // OpenAI / Claude Aliases -> Automatically routed to Gemini 3.8
+    // Aliases
     // =========================================================================
     'gpt-4o': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.8-flash', arch: 'gemini-3', desc: 'GPT-4o -> Gemini 3.8 Flash' },
     'gpt-4o-mini': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.8-flash', arch: 'gemini-3', desc: 'GPT-4o Mini -> Gemini 3.8 Flash' },
@@ -242,7 +241,6 @@ export function resolveModel(modelName = '') {
     return { ...config.modelMappings[name], id: name };
   }
 
-  // Smart heuristic resolution
   const isThinking = name.includes('thinking') || name.includes('reason') || name.includes('deep');
   const isPro = name.includes('pro') || name.includes('ultra');
 
@@ -266,6 +264,6 @@ export function resolveModel(modelName = '') {
     isThinking,
     studioId,
     arch,
-    desc: `Dynamic Auto-Routed Model (${modelName})`
+    desc: `Dynamic Auto-Routed (${modelName})`
   };
 }
