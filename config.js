@@ -1,6 +1,7 @@
 /**
  * config.js
- * Centralized Configuration & Universal Model Directory.
+ * Centralized Configuration & Comprehensive Google Gemini Model Directory.
+ * Zero-penalty defaults to protect vocabulary and sampling fidelity.
  */
 
 export const config = {
@@ -23,18 +24,18 @@ export const config = {
     process.env.USER_AGENT ||
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
 
-  // Default Sampling & Anti-Loop Defaults (Used if not overridden by Janitor sliders)
   defaultModel: 'gemini-3.8-flash',
   defaultTemperature: 0.8,
   defaultTopP: 0.95,
-  defaultFrequencyPenalty: 0.35, // Anti-catchphrase decay for 50+ turn chats
-  defaultPresencePenalty: 0.2,
 
-  // Global search grounding toggle (also triggers on-demand via [ OOC: search: ... ])
+  // Penalties are disabled by default (0.0) to prevent vocabulary degradation
+  defaultFrequencyPenalty: 0.0,
+  defaultPresencePenalty: 0.0,
+
   enableGoogleSearch: false,
 
   modelMappings: {
-    // Gemini 3.8 Series (Flagships)
+    // Gemini 3.8 Series
     'gemini-3.8-flash': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.8-flash', desc: 'Gemini 3.8 Flash' },
     'gemini-3.8-flash-thinking': { mode: 2, think: 0, isThinking: true, studioId: 'gemini-3.8-flash', desc: 'Gemini 3.8 Flash Thinking' },
     'gemini-3.8-thinking': { mode: 2, think: 0, isThinking: true, studioId: 'gemini-3.8-flash', desc: 'Gemini 3.8 Thinking' },
@@ -49,7 +50,12 @@ export const config = {
     'gemini-3.6-flash': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.6-flash', desc: 'Gemini 3.6 Flash' },
     'gemini-3.6-flash-thinking': { mode: 2, think: 0, isThinking: true, studioId: 'gemini-3.6-flash', desc: 'Gemini 3.6 Flash Thinking' },
 
-    // OpenAI Aliases
+    // Legacy / Fallbacks
+    'gemini-2.0-flash': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.8-flash', desc: 'Gemini 2.0 Flash' },
+    'gemini-1.5-flash': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-1.5-flash', desc: 'Gemini 1.5 Flash' },
+    'gemini-1.5-pro': { mode: 3, think: 0, isThinking: true, studioId: 'gemini-1.5-pro', desc: 'Gemini 1.5 Pro' },
+
+    // OpenAI Aliases -> Route directly to 3.8 Flash
     'gpt-4o': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.8-flash', desc: 'GPT-4o -> Gemini 3.8 Flash' },
     'gpt-4o-mini': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.8-flash', desc: 'GPT-4o Mini -> Gemini 3.8 Flash' },
     'gpt-4': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.8-flash', desc: 'GPT-4 -> Gemini 3.8 Flash' },
