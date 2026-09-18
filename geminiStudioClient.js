@@ -1,7 +1,9 @@
 /**
  * geminiStudioClient.js
  * Direct Google AI Studio API client with Multi-Key Pool & 429 Failover.
- * Supports both new AQ. format and legacy AIza format keys via x-goog-api-key header.
+ * - Supports new AQ. and legacy AIza keys via x-goog-api-key header
+ * - BLOCK_NONE safety filters on the 4 supported categories
+ * - Automatic empty content part filtering to avoid 400 Bad Request
  */
 
 import { config } from './config.js';
@@ -13,15 +15,10 @@ export class StudioKeyManager {
     this.cooldowns = new Map();
   }
 
-  /**
-   * Extracts and validates keys from JanitorAI header or config.
-   * Recognizes both new 'AQ.' format and legacy 'AIza' format keys.
-   */
   extractKeys(authHeader = '') {
     const rawBearer = authHeader.replace(/^Bearer\s+/i, '').trim();
     const candidates = [];
 
-    // Filter out common dummy placeholders
     if (rawBearer && !/^(no-key|none|dummy|null|undefined|test)$/i.test(rawBearer)) {
       const splitKeys = rawBearer
         .split(/[,;\s]+/)
@@ -64,13 +61,13 @@ export class StudioKeyManager {
 export const studioKeyManager = new StudioKeyManager();
 
 export class GeminiStudioClient {
+  // Only the 4 supported categories accept BLOCK_NONE without 400 Bad Request
   static getSafetySettings() {
     return [
       { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
       { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
       { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }
     ];
   }
 
@@ -78,31 +75,48 @@ export class GeminiStudioClient {
     let lastError = null;
     const maxAttempts = Math.max(availableKeys.length * 2, 3);
 
+    // Sanitize contents: remove any empty parts to prevent 400 Bad Request
+    const rawContents = Array.isArray(studioPayload.contents) ? studioPayload.contents : [];
+    const validContents = rawContents
+      .map((item) => ({
+        role: item.role === 'model' ? 'model' : 'user',
+        parts: (item.parts || []).filter((p) => typeof p.text === 'string' && p.text.trim().length > 0)
+      }))
+      .filter((item) => item.parts.length > 0);
+
+    if (validContents.length === 0) {
+      validContents.push({ role: 'user', parts: [{ text: 'Hello' }] });
+    }
+
+    // Ensure contents starts with 'user'
+    if (validContents[0].role === 'model') {
+      validContents.unshift({ role: 'user', parts: [{ text: '(Roleplay Context)' }] });
+    }
+
+    const requestBody = {
+      contents: validContents,
+      safetySettings: GeminiStudioClient.getSafetySettings(),
+      generationConfig: {
+        temperature: Number(temperature) || 0.8,
+        topP: 0.95
+      }
+    };
+
+    // Attach system instruction if non-empty
+    const sysText = studioPayload.systemInstruction?.parts?.[0]?.text?.trim();
+    if (sysText) {
+      requestBody.systemInstruction = {
+        parts: [{ text: sysText }]
+      };
+    }
+
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const apiKey = studioKeyManager.getNextHealthyKey(availableKeys);
       if (!apiKey) throw new Error('No valid Google AI Studio API key provided.');
 
       const cleaner = new StreamCleaner();
       const modelId = studioPayload.studioId || 'gemini-2.5-flash';
-      
-      // Native endpoint with alt=sse parameter
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:streamGenerateContent?alt=sse`;
-
-      const requestBody = {
-        contents: studioPayload.contents,
-        systemInstruction: studioPayload.systemInstruction,
-        safetySettings: GeminiStudioClient.getSafetySettings(),
-        generationConfig: {
-          temperature: Number(temperature) || 0.8,
-          topP: 0.95
-        }
-      };
-
-      if (studioPayload.isThinking) {
-        requestBody.generationConfig.thinkingConfig = {
-          thinkingBudget: config.thinkingBudgetTokens
-        };
-      }
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), config.requestTimeoutMs);
@@ -115,7 +129,6 @@ export class GeminiStudioClient {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            // Pass via x-goog-api-key header (required for AQ. format keys)
             'x-goog-api-key': apiKey
           },
           body: JSON.stringify(requestBody),
@@ -127,10 +140,10 @@ export class GeminiStudioClient {
         continue;
       }
 
-      // Handle 429 Rate Limits with Key Rotation
+      // Handle 429 Rate Limit
       if (res.status === 429) {
         clearTimeout(timeoutId);
-        console.warn(`[Studio API] Key ...${apiKey.slice(-6)} hit 429 (Rate Limit). Rotating to next key...`);
+        console.warn(`[Studio API] Key ...${apiKey.slice(-6)} hit 429 (Rate Limit). Rotating keys...`);
         studioKeyManager.markCooldown(apiKey, 45000);
         continue;
       }
@@ -138,7 +151,9 @@ export class GeminiStudioClient {
       if (!res.ok) {
         clearTimeout(timeoutId);
         const errText = await res.text();
+        console.error(`[Studio API Error] HTTP ${res.status}: ${errText}`);
         lastError = new Error(`Google AI Studio HTTP ${res.status}: ${errText}`);
+
         if (res.status === 400 && errText.includes('API_KEY_INVALID')) {
           studioKeyManager.markCooldown(apiKey, 3600000);
         }
@@ -183,7 +198,7 @@ export class GeminiStudioClient {
                     }
                   }
                 } catch (e) {
-                  // Partial chunk frame skip
+                  // Skip partial frame
                 }
               }
             }
@@ -204,7 +219,7 @@ export class GeminiStudioClient {
       }
     }
 
-    throw lastError || new Error('All Google AI Studio keys exhausted or rate-limited.');
+    throw lastError || new Error('All Google AI Studio keys exhausted or rejected.');
   }
 
   static async completeText(studioPayload, availableKeys, temperature = 0.8) {
