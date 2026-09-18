@@ -1,41 +1,36 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# termux-start.sh (v1.1 Update)
-# Android Termux 1-Click Bootstrap and Global CLI Configurator
+# termux-start.sh - Termux 1-Click Bootstrap and Runner
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "==================================================="
-echo "     Asriel-Proxy-Gemini : Termux Launcher v1.1    "
+echo "  Asriel-Proxy-Gemini v2.0 : Android Termux Runner "
 echo "==================================================="
 
-# Ensure Node.js is installed
 if ! command -v node >/dev/null 2>&1; then
-    echo "[SETUP] Node.js not detected. Installing via Termux package manager..."
+    echo "[SETUP] Node.js not detected. Installing via pkg..."
     pkg update -y
     pkg install nodejs -y
 fi
 
-# Auto-install the universal "asriel" CLI command if not already present
 if [ ! -f "$PREFIX/bin/asriel" ]; then
-    echo "[SETUP] Registering global case-insensitive CLI shortcut..."
+    echo "[SETUP] Registering universal 'asriel' command..."
     chmod +x "$SCRIPT_DIR/install-global.sh"
     "$SCRIPT_DIR/install-global.sh"
 fi
 
-# Detect phone's IP address on Wi-Fi
 LOCAL_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{print $7}' || echo "127.0.0.1")
 
 echo "---------------------------------------------------"
-echo " JanitorAI Endpoint on this phone:"
+echo " JanitorAI Reverse Proxy URL on this device:"
 echo "   http://127.0.0.1:5000/v1"
 echo ""
-echo " Access from another device on same Wi-Fi:"
+echo " If using browser on same Wi-Fi:"
 echo "   http://${LOCAL_IP}:5000/v1"
 echo ""
-echo " Global command active: Type 'asriel' (any case) anywhere!"
+echo " Type 'asriel' from any folder to start anytime!"
 echo "---------------------------------------------------"
 
-# Launch proxy
 exec node "$SCRIPT_DIR/server.js"
