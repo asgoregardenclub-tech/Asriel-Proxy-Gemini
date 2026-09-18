@@ -4,6 +4,7 @@
  * Supports:
  * - Free Anonymous Guest Web Mode (Zero-Key)
  * - Direct Google AI Studio API Mode with Multi-Key Pool & 429 Failover
+ * - Universal URL path handling (/v1, /v1/chat/completions, /chat/completions, /)
  */
 
 import http from 'node:http';
@@ -14,7 +15,7 @@ import { ContextBuilder } from './contextBuilder.js';
 import { GeminiGuestClient } from './geminiGuestClient.js';
 import { GeminiStudioClient, studioKeyManager } from './geminiStudioClient.js';
 
-// ANSI Color Palette for Terminal Logging
+// ANSI Color Palette
 const isTTY = Boolean(process.stdout.isTTY || process.env.TERM);
 const c = {
   reset: isTTY ? '\x1b[0m' : '',
@@ -90,9 +91,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = parsedUrl.pathname;
+  const pathname = parsedUrl.pathname.replace(/\/+$/, '') || '/';
 
-  // Root health check
+  // Health check
   if ((pathname === '/' || pathname === '/health') && req.method === 'GET') {
     sendJson(res, 200, {
       status: 'online',
@@ -104,8 +105,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // GET /v1/models
-  if ((pathname === '/v1/models' || pathname === '/models') && req.method === 'GET') {
+  // GET /v1/models or GET /models or GET /v1
+  if ((pathname === '/v1/models' || pathname === '/models' || pathname === '/v1') && req.method === 'GET') {
     const modelsList = Object.entries(config.modelMappings).map(([id, info]) => ({
       id,
       object: 'model',
@@ -121,8 +122,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /v1/chat/completions
-  if ((pathname === '/v1/chat/completions' || pathname === '/chat/completions') && req.method === 'POST') {
+  // Universal Route Matcher for Chat Completions:
+  // Catches /v1/chat/completions, /chat/completions, /v1, or / on POST
+  const isChatCompletion =
+    req.method === 'POST' &&
+    (pathname.includes('/chat/completions') ||
+     pathname === '/v1' ||
+     pathname === '/');
+
+  if (isChatCompletion) {
     let payload;
     try {
       const raw = await readBody(req);
