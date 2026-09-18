@@ -1,7 +1,6 @@
 /**
  * geminiGuestClient.js
  * Reverse-engineered Google Gemini Guest Web RPC client.
- * Dispatches StreamGenerate calls over anonymous web sessions.
  */
 
 import crypto from 'node:crypto';
@@ -9,7 +8,7 @@ import { config, resolveModel } from './config.js';
 import { StreamCleaner, cleanText } from './cleaner.js';
 
 export class GeminiGuestClient {
-  static async *rawStreamGenerate(prompt, modelName, session) {
+  static async *rawStreamGenerate(prompt, modelName, session, abortSignal = null) {
     const modelDef = resolveModel(modelName);
     const modelId = modelDef.mode;
     const thinkMode = modelDef.think;
@@ -72,6 +71,12 @@ export class GeminiGuestClient {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), config.requestTimeoutMs);
 
+    const onAbort = () => {
+      controller.abort();
+      clearTimeout(timeoutId);
+    };
+    abortSignal?.addEventListener('abort', onAbort);
+
     let res;
     try {
       res = await fetch(url, {
@@ -82,6 +87,7 @@ export class GeminiGuestClient {
       });
     } finally {
       clearTimeout(timeoutId);
+      abortSignal?.removeEventListener('abort', onAbort);
     }
 
     if (!res.ok) {
@@ -98,6 +104,8 @@ export class GeminiGuestClient {
 
     try {
       while (true) {
+        if (abortSignal?.aborted) break;
+
         const { done, value } = await reader.read();
         if (done) break;
 
@@ -106,7 +114,7 @@ export class GeminiGuestClient {
         if (buffer.includes('BardErrorInfo')) {
           const errMatch = buffer.match(/BardErrorInfo\s*\[(\d+)\]/);
           const errCode = errMatch ? errMatch[1] : 'Unknown';
-          throw new Error(`Gemini Web safety/session rejection: BardErrorInfo [${errCode}]`);
+          throw new Error(`Gemini Web rejection: BardErrorInfo [${errCode}]`);
         }
 
         while (buffer.includes('\n')) {
@@ -133,8 +141,8 @@ export class GeminiGuestClient {
                 }
               }
             }
-          } catch (e) {
-            // Partial chunk parse skip
+          } catch {
+            // Partial JSON chunk skip
           }
         }
       }
@@ -143,19 +151,23 @@ export class GeminiGuestClient {
     }
   }
 
-  static async *streamCompletion(prompt, modelName, pool, conversationId = null) {
+  static async *streamCompletion(prompt, modelName, pool, conversationId = null, abortSignal = null) {
     let lastError = null;
 
     for (let attempt = 0; attempt < config.retryAttempts; attempt++) {
+      if (abortSignal?.aborted) return;
+
       const session = await pool.acquireSession(conversationId);
       const cleaner = new StreamCleaner();
       let prevText = '';
       let hasEmittedTokens = false;
 
       try {
-        const stream = GeminiGuestClient.rawStreamGenerate(prompt, modelName, session);
+        const stream = GeminiGuestClient.rawStreamGenerate(prompt, modelName, session, abortSignal);
 
         for await (const cumulativeText of stream) {
+          if (abortSignal?.aborted) break;
+
           if (cumulativeText.length > prevText.length) {
             const delta = cumulativeText.slice(prevText.length);
             prevText = cumulativeText;
@@ -179,7 +191,7 @@ export class GeminiGuestClient {
         lastError = err;
         pool.invalidateSession(session);
 
-        if (hasEmittedTokens) throw err;
+        if (hasEmittedTokens || abortSignal?.aborted) throw err;
 
         if (attempt < config.retryAttempts - 1) {
           await new Promise((r) => setTimeout(r, config.retryDelayMs * (attempt + 1)));
@@ -190,9 +202,9 @@ export class GeminiGuestClient {
     throw lastError || new Error('All guest completion attempts failed.');
   }
 
-  static async completeText(prompt, modelName, pool, conversationId = null) {
+  static async completeText(prompt, modelName, pool, conversationId = null, abortSignal = null) {
     let fullOutput = '';
-    for await (const chunk of GeminiGuestClient.streamCompletion(prompt, modelName, pool, conversationId)) {
+    for await (const chunk of GeminiGuestClient.streamCompletion(prompt, modelName, pool, conversationId, abortSignal)) {
       fullOutput += chunk;
     }
     return cleanText(fullOutput);
