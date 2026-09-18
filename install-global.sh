@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# install-global.sh
-# Universal Case-Insensitive CLI Shortcut Installer for Termux, Linux, and macOS.
+# Universal CLI shortcut installer for Termux, Linux, and macOS.
 
 set -e
 
@@ -27,7 +26,7 @@ else
     ZSHRC_FILE="$HOME/.zshrc"
 fi
 
-echo "[1/4] Target binary path: $TARGET_BIN"
+echo "[1/4] Target path: $TARGET_BIN"
 
 WRAPPER_FILE="$TARGET_BIN/$WRAPPER_NAME"
 cat <<EOF > "$WRAPPER_FILE"
@@ -66,7 +65,7 @@ command_not_found_handle() {
 
 CASE_HOOK_ZSH='
 # >>> Asriel-Proxy-Gemini Case-Insensitive CLI Handler >>>
-command_not_found_handler() {
+command_not_handler() {
     local cmd="$1"
     if [[ "${(L)cmd}" == "asriel" ]]; then
         shift
@@ -94,7 +93,7 @@ if [ -f "$ZSHRC_FILE" ] || [ -n "$ZSH_VERSION" ]; then
     fi
 fi
 
-echo "[4/4] Case-insensitive handler registered."
+echo "[4/4] CLI shortcut handler ready."
 echo "==================================================="
-echo " Installed! You can now run 'asriel' from any folder."
+echo " Installed! Run 'asriel' from any directory."
 echo "==================================================="
