@@ -1,6 +1,6 @@
 /**
  * sessionPool.js
- * Dynamic Session Pool and Rotator for anonymous Gemini Guest Web sessions.
+ * Session Pool and Rotator for anonymous Gemini Guest Web sessions.
  */
 
 import crypto from 'node:crypto';
@@ -111,7 +111,7 @@ export class SessionPool {
         fSid,
         reqId: Math.floor(Math.random() * 800000) + 100000
       });
-    } catch (err) {
+    } catch {
       return new GuestSession({
         cookies: '',
         snlm0e: '',
