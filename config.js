@@ -1,7 +1,6 @@
 /**
  * config.js
- * Centralized Configuration & Comprehensive Google Gemini Model Directory.
- * Fully aligned to Gemini 3.8 Flagship Generation.
+ * Centralized Configuration & Universal Model Directory.
  */
 
 export const config = {
@@ -24,34 +23,33 @@ export const config = {
     process.env.USER_AGENT ||
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
 
-  // Latest released flagship model
+  // Default Sampling & Anti-Loop Defaults (Used if not overridden by Janitor sliders)
   defaultModel: 'gemini-3.8-flash',
+  defaultTemperature: 0.8,
+  defaultTopP: 0.95,
+  defaultFrequencyPenalty: 0.35, // Anti-catchphrase decay for 50+ turn chats
+  defaultPresencePenalty: 0.2,
+
+  // Global search grounding toggle (also triggers on-demand via [ OOC: search: ... ])
+  enableGoogleSearch: false,
 
   modelMappings: {
-    // -----------------------------------------------------------------------
-    // GEMINI 3.8 FLAGSHIP SERIES (Latest Released Models)
-    // -----------------------------------------------------------------------
+    // Gemini 3.8 Series (Flagships)
     'gemini-3.8-flash': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.8-flash', desc: 'Gemini 3.8 Flash' },
     'gemini-3.8-flash-thinking': { mode: 2, think: 0, isThinking: true, studioId: 'gemini-3.8-flash', desc: 'Gemini 3.8 Flash Thinking' },
     'gemini-3.8-thinking': { mode: 2, think: 0, isThinking: true, studioId: 'gemini-3.8-flash', desc: 'Gemini 3.8 Thinking' },
     'gemini-3.8-pro': { mode: 3, think: 0, isThinking: true, studioId: 'gemini-3.8-pro', desc: 'Gemini 3.8 Pro' },
 
-    // -----------------------------------------------------------------------
-    // GEMINI 3.7 SERIES
-    // -----------------------------------------------------------------------
+    // Gemini 3.7 Series
     'gemini-3.7-flash': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.7-flash', desc: 'Gemini 3.7 Flash' },
     'gemini-3.7-flash-thinking': { mode: 2, think: 0, isThinking: true, studioId: 'gemini-3.7-flash', desc: 'Gemini 3.7 Flash Thinking' },
     'gemini-3.7-pro': { mode: 3, think: 0, isThinking: true, studioId: 'gemini-3.7-pro', desc: 'Gemini 3.7 Pro' },
 
-    // -----------------------------------------------------------------------
-    // GEMINI 3.6 SERIES
-    // -----------------------------------------------------------------------
+    // Gemini 3.6 Series
     'gemini-3.6-flash': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.6-flash', desc: 'Gemini 3.6 Flash' },
     'gemini-3.6-flash-thinking': { mode: 2, think: 0, isThinking: true, studioId: 'gemini-3.6-flash', desc: 'Gemini 3.6 Flash Thinking' },
 
-    // -----------------------------------------------------------------------
-    // OPENAI ALIASES -> Route directly to Gemini 3.8 Flash
-    // -----------------------------------------------------------------------
+    // OpenAI Aliases
     'gpt-4o': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.8-flash', desc: 'GPT-4o -> Gemini 3.8 Flash' },
     'gpt-4o-mini': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.8-flash', desc: 'GPT-4o Mini -> Gemini 3.8 Flash' },
     'gpt-4': { mode: 1, think: 4, isThinking: false, studioId: 'gemini-3.8-flash', desc: 'GPT-4 -> Gemini 3.8 Flash' },
@@ -62,12 +60,10 @@ export const config = {
 export function resolveModel(modelName = '') {
   const name = String(modelName).trim().toLowerCase();
 
-  // 1. Direct dictionary match
   if (config.modelMappings[name]) {
     return { ...config.modelMappings[name], id: name };
   }
 
-  // 2. If it's a thinking variant, map to 3.8-flash with thinking enabled
   if (name.includes('thinking') || name.includes('reason') || name.includes('deep')) {
     return {
       id: name,
@@ -79,7 +75,6 @@ export function resolveModel(modelName = '') {
     };
   }
 
-  // 3. If it's pro, map to 3.8-pro
   if (name.includes('pro') || name.includes('ultra')) {
     return {
       id: name,
@@ -91,7 +86,6 @@ export function resolveModel(modelName = '') {
     };
   }
 
-  // 4. Any other custom string defaults directly to Gemini 3.8 Flash
   return {
     id: name,
     mode: 1,
