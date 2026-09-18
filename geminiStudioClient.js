@@ -1,6 +1,7 @@
 /**
  * geminiStudioClient.js
- * Direct Google AI Studio API client with Multi-Key Pool & 429 Auto-Failover.
+ * Direct Google AI Studio API client with Multi-Key Pool & 429 Failover.
+ * Supports both new AQ. format and legacy AIza format keys via x-goog-api-key header.
  */
 
 import { config } from './config.js';
@@ -9,34 +10,33 @@ import { StreamCleaner, cleanText } from './cleaner.js';
 export class StudioKeyManager {
   constructor() {
     this.keyIndex = 0;
-    this.cooldowns = new Map(); // key -> cooldown timestamp
+    this.cooldowns = new Map();
   }
 
   /**
-   * Parses keys from JanitorAI header, config, or environment
+   * Extracts and validates keys from JanitorAI header or config.
+   * Recognizes both new 'AQ.' format and legacy 'AIza' format keys.
    */
   extractKeys(authHeader = '') {
     const rawBearer = authHeader.replace(/^Bearer\s+/i, '').trim();
     const candidates = [];
 
-    // 1. Keys from JanitorAI header (comma, semicolon, or space separated)
-    if (rawBearer.startsWith('AIzaSy')) {
-      const splitKeys = rawBearer.split(/[,;\s]+/).filter((k) => k.startsWith('AIzaSy'));
+    // Filter out common dummy placeholders
+    if (rawBearer && !/^(no-key|none|dummy|null|undefined|test)$/i.test(rawBearer)) {
+      const splitKeys = rawBearer
+        .split(/[,;\s]+/)
+        .map((k) => k.trim())
+        .filter((k) => k.startsWith('AQ.') || k.startsWith('AIza') || k.length >= 20);
       candidates.push(...splitKeys);
     }
 
-    // 2. Fallback to server-side config keys if defined
     if (Array.isArray(config.studioApiKeys) && config.studioApiKeys.length > 0) {
       candidates.push(...config.studioApiKeys);
     }
 
-    // De-duplicate
     return [...new Set(candidates)];
   }
 
-  /**
-   * Selects the next available key that isn't on 429 cooldown
-   */
   getNextHealthyKey(keys) {
     if (!keys || keys.length === 0) return null;
 
@@ -52,7 +52,6 @@ export class StudioKeyManager {
       }
     }
 
-    // If all keys are in cooldown, return the one closest to expiring
     this.keyIndex = (this.keyIndex + 1) % keys.length;
     return keys[this.keyIndex];
   }
@@ -85,7 +84,9 @@ export class GeminiStudioClient {
 
       const cleaner = new StreamCleaner();
       const modelId = studioPayload.studioId || 'gemini-2.5-flash';
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:streamGenerateContent?key=${apiKey}&alt=sse`;
+      
+      // Native endpoint with alt=sse parameter
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:streamGenerateContent?alt=sse`;
 
       const requestBody = {
         contents: studioPayload.contents,
@@ -112,7 +113,11 @@ export class GeminiStudioClient {
       try {
         res = await fetch(url, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            // Pass via x-goog-api-key header (required for AQ. format keys)
+            'x-goog-api-key': apiKey
+          },
           body: JSON.stringify(requestBody),
           signal: controller.signal
         });
@@ -122,11 +127,11 @@ export class GeminiStudioClient {
         continue;
       }
 
-      // Handle 429 Rate Limit (Failover to next key)
+      // Handle 429 Rate Limits with Key Rotation
       if (res.status === 429) {
         clearTimeout(timeoutId);
-        console.warn(`[Studio API] Key ending in ...${apiKey.slice(-6)} hit 429 (Rate Limit). Rotating keys...`);
-        studioKeyManager.markCooldown(apiKey, 45000); // 45 second cooldown
+        console.warn(`[Studio API] Key ...${apiKey.slice(-6)} hit 429 (Rate Limit). Rotating to next key...`);
+        studioKeyManager.markCooldown(apiKey, 45000);
         continue;
       }
 
@@ -134,7 +139,6 @@ export class GeminiStudioClient {
         clearTimeout(timeoutId);
         const errText = await res.text();
         lastError = new Error(`Google AI Studio HTTP ${res.status}: ${errText}`);
-        // If key is invalid (400), don't reuse it
         if (res.status === 400 && errText.includes('API_KEY_INVALID')) {
           studioKeyManager.markCooldown(apiKey, 3600000);
         }
@@ -179,7 +183,7 @@ export class GeminiStudioClient {
                     }
                   }
                 } catch (e) {
-                  // Skip partial JSON frame
+                  // Partial chunk frame skip
                 }
               }
             }
@@ -190,7 +194,7 @@ export class GeminiStudioClient {
         if (flushed) yield flushed;
 
         clearTimeout(timeoutId);
-        return; // Success!
+        return;
       } catch (streamErr) {
         clearTimeout(timeoutId);
         if (hasEmittedTokens) throw streamErr;
