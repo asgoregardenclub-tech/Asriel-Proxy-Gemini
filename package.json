@@ -1,11 +1,11 @@
 {
   "name": "asriel-proxy-gemini",
-  "version": "2.0.0",
-  "description": "Professional Hybrid OpenAI-Compatible Reverse Proxy for Google Gemini (Guest Web & AI Studio)",
+  "version": "2.5.0",
+  "description": "Production-Grade Hybrid OpenAI-Compatible Reverse Proxy for Google Gemini (AI Studio & Guest Web)",
   "type": "module",
   "main": "server.js",
   "engines": {
-    "node": ">=26.0.0"
+    "node": ">=20.0.0"
   },
   "scripts": {
     "start": "node server.js"
@@ -16,7 +16,8 @@
     "reverse-proxy",
     "roleplay",
     "termux",
-    "ai-studio"
+    "ai-studio",
+    "gemini-3"
   ],
   "author": "Asriel Engineering",
   "license": "MIT",
