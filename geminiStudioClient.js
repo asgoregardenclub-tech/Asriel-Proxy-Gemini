@@ -1,8 +1,8 @@
 /**
  * geminiStudioClient.js
- * Direct Google AI Studio API client targeting Gemini 3.8 / 3.7 Flash.
- * - Multi-part array reading (captures narrative across all parts)
- * - Detects finishReason: SAFETY and promptFeedback blockReason
+ * Direct Google AI Studio API client with:
+ * - Smart Model Cascading on 503 (3.8 -> 3.7 -> 3.6 on high demand)
+ * - Snappy 25s per-attempt timeout (no more 3-minute hangs)
  * - Multi-Key Pool & 429 Failover
  * - BLOCK_NONE safety filters
  */
@@ -73,7 +73,8 @@ export class GeminiStudioClient {
 
   static async *streamCompletion(studioPayload, availableKeys, temperature = 0.8) {
     let lastError = null;
-    const maxAttempts = Math.max(availableKeys.length * 2, 4);
+    const maxAttempts = 6;
+    let consecutive503Count = 0;
 
     const rawContents = Array.isArray(studioPayload.contents) ? studioPayload.contents : [];
     const validContents = rawContents
@@ -119,8 +120,9 @@ export class GeminiStudioClient {
       const cleaner = new StreamCleaner();
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModelId}:streamGenerateContent?alt=sse`;
 
+      // Snappy 25-second connection timeout per attempt (prevents 3-minute queue hangs)
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
 
       let res;
       let hasEmittedTokens = false;
@@ -139,9 +141,11 @@ export class GeminiStudioClient {
       } catch (networkErr) {
         clearTimeout(timeoutId);
         lastError = networkErr;
+        console.warn(`[Studio API] Attempt ${attempt + 1} timed out or network error on ${targetModelId}. Retrying...`);
         continue;
       }
 
+      // Handle 429 Rate Limit (Per-Key Limit)
       if (res.status === 429) {
         clearTimeout(timeoutId);
         console.warn(`[Studio API] Key ...${apiKey.slice(-6)} hit 429. Rotating key...`);
@@ -149,10 +153,31 @@ export class GeminiStudioClient {
         continue;
       }
 
+      // Handle 503 High Demand (Server Congestion) -> Model Cascade
+      if (res.status === 503) {
+        clearTimeout(timeoutId);
+        consecutive503Count++;
+        console.warn(`[Studio API] HTTP 503 (High Demand) on ${targetModelId}.`);
+
+        // If high demand persists, cascade to 3.7 or 3.6 to get an instant slot
+        if (consecutive503Count === 2 && targetModelId === 'gemini-3.8-flash') {
+          console.warn(`[Studio API] Cascading from gemini-3.8-flash -> gemini-3.7-flash to bypass queue...`);
+          targetModelId = 'gemini-3.7-flash';
+        } else if (consecutive503Count >= 3 && targetModelId !== 'gemini-3.6-flash') {
+          console.warn(`[Studio API] Cascading to gemini-3.6-flash (Low Traffic Tier)...`);
+          targetModelId = 'gemini-3.6-flash';
+        }
+
+        // 1-second breathing room before retry
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+
+      // Handle 404 Model Deprecation
       if (res.status === 404) {
         clearTimeout(timeoutId);
-        console.warn(`[Studio API] Model '${targetModelId}' returned 404. Falling back to 'gemini-3.8-flash'...`);
-        targetModelId = 'gemini-3.8-flash';
+        console.warn(`[Studio API] Model '${targetModelId}' returned 404. Falling back to 'gemini-3.6-flash'...`);
+        targetModelId = 'gemini-3.6-flash';
         continue;
       }
 
@@ -198,25 +223,23 @@ export class GeminiStudioClient {
                 try {
                   const parsed = JSON.parse(rawJson);
 
-                  // Check prompt level blocks
                   if (parsed.promptFeedback?.blockReason) {
-                    console.warn(`[Studio API] Prompt blocked by Google: ${parsed.promptFeedback.blockReason}`);
+                    console.warn(`[Studio API] Prompt blocked: ${parsed.promptFeedback.blockReason}`);
                     safetyBlocked = true;
-                    lastError = new Error(`Prompt blocked by Google: ${parsed.promptFeedback.blockReason}`);
+                    lastError = new Error(`Prompt blocked: ${parsed.promptFeedback.blockReason}`);
                   }
 
                   const candidate = parsed.candidates?.[0];
                   if (candidate) {
                     if (candidate.finishReason === 'SAFETY') {
-                      console.warn(`[Studio API] Output blocked by Google (finishReason: SAFETY)`);
+                      console.warn(`[Studio API] Output blocked (finishReason: SAFETY)`);
                       safetyBlocked = true;
-                      lastError = new Error(`Output was blocked by Google safety filter (finishReason: SAFETY).`);
+                      lastError = new Error(`Output blocked by safety filter.`);
                     }
 
-                    // Iterate over ALL parts in candidate content
                     if (Array.isArray(candidate.content?.parts)) {
                       for (const part of candidate.content.parts) {
-                        if (part.thought) continue; // Skip thought tokens
+                        if (part.thought) continue;
                         if (typeof part.text === 'string' && part.text.length > 0) {
                           const cleaned = cleaner.process(part.text);
                           if (cleaned) {
@@ -228,7 +251,7 @@ export class GeminiStudioClient {
                     }
                   }
                 } catch (e) {
-                  // Skip malformed SSE frame
+                  // Skip malformed chunk
                 }
               }
             }
@@ -243,12 +266,9 @@ export class GeminiStudioClient {
 
         clearTimeout(timeoutId);
 
-        // If Google closed the stream without generating any tokens:
         if (!hasEmittedTokens) {
-          if (safetyBlocked) {
-            throw lastError || new Error('Google filtered the response for safety.');
-          }
-          throw new Error('Google returned an empty completion.');
+          if (safetyBlocked) throw lastError || new Error('Google filtered the response.');
+          throw new Error('Empty completion received from upstream.');
         }
 
         return; // Success
@@ -261,7 +281,7 @@ export class GeminiStudioClient {
       }
     }
 
-    throw lastError || new Error('All Google AI Studio attempts exhausted or blocked.');
+    throw lastError || new Error('Google AI Studio is currently experiencing severe high demand across all models.');
   }
 
   static async completeText(studioPayload, availableKeys, temperature = 0.8) {
@@ -271,7 +291,7 @@ export class GeminiStudioClient {
     }
     const sanitized = cleanText(fullOutput);
     if (!sanitized || sanitized.trim().length === 0) {
-      throw new Error('Google returned an empty completion (likely filtered by finishReason: SAFETY).');
+      throw new Error('Google returned an empty completion.');
     }
     return sanitized;
   }
