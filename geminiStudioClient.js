@@ -1,10 +1,12 @@
 /**
  * geminiStudioClient.js
  * Direct Google AI Studio API client with:
- * - Smart Model Cascading on 503 (3.8 -> 3.7 -> 3.6 on high demand)
- * - Snappy 25s per-attempt timeout (no more 3-minute hangs)
+ * - JanitorAI UI Slider Passthrough (temperature, top_p, max_tokens, penalties)
+ * - Anti-Loop / Catchphrase Decay (frequencyPenalty & presencePenalty)
+ * - Live Google Search Grounding Tool
+ * - Smart Model Cascading on 503
+ * - Snappy 25s per-attempt timeout
  * - Multi-Key Pool & 429 Failover
- * - BLOCK_NONE safety filters
  */
 
 import { config } from './config.js';
@@ -71,7 +73,7 @@ export class GeminiStudioClient {
     ];
   }
 
-  static async *streamCompletion(studioPayload, availableKeys, temperature = 0.8) {
+  static async *streamCompletion(studioPayload, availableKeys, sampling = {}) {
     let lastError = null;
     const maxAttempts = 6;
     let consecutive503Count = 0;
@@ -92,14 +94,28 @@ export class GeminiStudioClient {
       validContents.unshift({ role: 'user', parts: [{ text: '(Roleplay Context)' }] });
     }
 
+    // Dynamic Sampling Passthrough from JanitorAI sliders
+    const generationConfig = {
+      temperature: typeof sampling.temperature === 'number' ? sampling.temperature : config.defaultTemperature,
+      topP: typeof sampling.topP === 'number' ? sampling.topP : config.defaultTopP,
+      frequencyPenalty: typeof sampling.frequencyPenalty === 'number' ? sampling.frequencyPenalty : config.defaultFrequencyPenalty,
+      presencePenalty: typeof sampling.presencePenalty === 'number' ? sampling.presencePenalty : config.defaultPresencePenalty
+    };
+
+    if (typeof sampling.maxOutputTokens === 'number' && sampling.maxOutputTokens > 0) {
+      generationConfig.maxOutputTokens = sampling.maxOutputTokens;
+    }
+
     const requestBody = {
       contents: validContents,
       safetySettings: GeminiStudioClient.getSafetySettings(),
-      generationConfig: {
-        temperature: Number(temperature) || 0.8,
-        topP: 0.95
-      }
+      generationConfig
     };
+
+    // Live Google Search Grounding Tool
+    if (studioPayload.enableSearch) {
+      requestBody.tools = [{ googleSearch: {} }];
+    }
 
     const sysText = studioPayload.systemInstruction?.parts?.[0]?.text?.trim();
     if (sysText) {
@@ -120,7 +136,6 @@ export class GeminiStudioClient {
       const cleaner = new StreamCleaner();
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModelId}:streamGenerateContent?alt=sse`;
 
-      // Snappy 25-second connection timeout per attempt (prevents 3-minute queue hangs)
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 25000);
 
@@ -141,11 +156,10 @@ export class GeminiStudioClient {
       } catch (networkErr) {
         clearTimeout(timeoutId);
         lastError = networkErr;
-        console.warn(`[Studio API] Attempt ${attempt + 1} timed out or network error on ${targetModelId}. Retrying...`);
+        console.warn(`[Studio API] Attempt ${attempt + 1} timeout on ${targetModelId}. Retrying...`);
         continue;
       }
 
-      // Handle 429 Rate Limit (Per-Key Limit)
       if (res.status === 429) {
         clearTimeout(timeoutId);
         console.warn(`[Studio API] Key ...${apiKey.slice(-6)} hit 429. Rotating key...`);
@@ -153,31 +167,27 @@ export class GeminiStudioClient {
         continue;
       }
 
-      // Handle 503 High Demand (Server Congestion) -> Model Cascade
       if (res.status === 503) {
         clearTimeout(timeoutId);
         consecutive503Count++;
         console.warn(`[Studio API] HTTP 503 (High Demand) on ${targetModelId}.`);
 
-        // If high demand persists, cascade to 3.7 or 3.6 to get an instant slot
         if (consecutive503Count === 2 && targetModelId === 'gemini-3.8-flash') {
-          console.warn(`[Studio API] Cascading from gemini-3.8-flash -> gemini-3.7-flash to bypass queue...`);
+          console.warn(`[Studio API] Cascading to gemini-3.7-flash to bypass queue...`);
           targetModelId = 'gemini-3.7-flash';
         } else if (consecutive503Count >= 3 && targetModelId !== 'gemini-3.6-flash') {
-          console.warn(`[Studio API] Cascading to gemini-3.6-flash (Low Traffic Tier)...`);
+          console.warn(`[Studio API] Cascading to gemini-3.6-flash...`);
           targetModelId = 'gemini-3.6-flash';
         }
 
-        // 1-second breathing room before retry
         await new Promise((r) => setTimeout(r, 1000));
         continue;
       }
 
-      // Handle 404 Model Deprecation
       if (res.status === 404) {
         clearTimeout(timeoutId);
-        console.warn(`[Studio API] Model '${targetModelId}' returned 404. Falling back to 'gemini-3.6-flash'...`);
-        targetModelId = 'gemini-3.6-flash';
+        console.warn(`[Studio API] Model '${targetModelId}' returned 404. Falling back to 'gemini-3.8-flash'...`);
+        targetModelId = 'gemini-3.8-flash';
         continue;
       }
 
@@ -251,7 +261,7 @@ export class GeminiStudioClient {
                     }
                   }
                 } catch (e) {
-                  // Skip malformed chunk
+                  // Partial frame skip
                 }
               }
             }
@@ -271,7 +281,7 @@ export class GeminiStudioClient {
           throw new Error('Empty completion received from upstream.');
         }
 
-        return; // Success
+        return;
       } catch (streamErr) {
         clearTimeout(timeoutId);
         if (hasEmittedTokens) throw streamErr;
@@ -281,12 +291,12 @@ export class GeminiStudioClient {
       }
     }
 
-    throw lastError || new Error('Google AI Studio is currently experiencing severe high demand across all models.');
+    throw lastError || new Error('All Google AI Studio attempts exhausted.');
   }
 
-  static async completeText(studioPayload, availableKeys, temperature = 0.8) {
+  static async completeText(studioPayload, availableKeys, sampling = {}) {
     let fullOutput = '';
-    for await (const chunk of GeminiStudioClient.streamCompletion(studioPayload, availableKeys, temperature)) {
+    for await (const chunk of GeminiStudioClient.streamCompletion(studioPayload, availableKeys, sampling)) {
       fullOutput += chunk;
     }
     const sanitized = cleanText(fullOutput);
