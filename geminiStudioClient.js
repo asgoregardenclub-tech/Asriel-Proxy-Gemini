@@ -1,21 +1,19 @@
 /**
  * geminiStudioClient.js
  * Direct Google AI Studio API client with:
- * - Smart Penalty Compatibility Checker (protects Gemini 3.x from invalid penalty errors)
- * - Model Cascading on 503
- * - Multi-Key Pool & 429 Failover
- * - BLOCK_NONE safety filters
+ * - Architectural parameter routing (thinkingLevel vs thinkingBudget)
+ * - Safe handling of Gemini 2.5 Pro minimum thinking budgets
+ * - Automatic stripping of frequency/presence penalties on Gemini 2.5/3.x models
+ * - Multi-key rotation with 429 backoff
+ * - Model cascading on HTTP 503
+ * - Full BLOCK_NONE safety thresholds across all categories
  */
 
 import { config } from './config.js';
 import { StreamCleaner, cleanText } from './cleaner.js';
 
-function supportsPenalties(modelId = '') {
-  const id = String(modelId).toLowerCase();
-  if (id.includes('3.') || id.includes('gemini-3')) {
-    return false;
-  }
-  return id.includes('1.5') || id.includes('2.0');
+function supportsPenalties(arch = '') {
+  return arch === 'gemini-legacy';
 }
 
 export class StudioKeyManager {
@@ -32,7 +30,7 @@ export class StudioKeyManager {
       const splitKeys = rawBearer
         .split(/[,;\s]+/)
         .map((k) => k.trim())
-        .filter((k) => k.startsWith('AQ.') || k.startsWith('AIza') || k.length >= 20);
+        .filter((k) => k.startsWith('AIza') || k.length >= 20);
       candidates.push(...splitKeys);
     }
 
@@ -75,13 +73,14 @@ export class GeminiStudioClient {
       { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
       { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
       { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_CIVIC_INTEGRITY', threshold: 'BLOCK_NONE' }
     ];
   }
 
-  static async *streamCompletion(studioPayload, availableKeys, sampling = {}) {
+  static async *streamCompletion(studioPayload, availableKeys, sampling = {}, abortSignal = null) {
     let lastError = null;
-    const maxAttempts = 6;
+    const maxAttempts = Math.max(6, availableKeys.length * 2);
     let consecutive503Count = 0;
 
     const rawContents = Array.isArray(studioPayload.contents) ? studioPayload.contents : [];
@@ -101,9 +100,7 @@ export class GeminiStudioClient {
     }
 
     let targetModelId = studioPayload.studioId || 'gemini-3.8-flash';
-    if (targetModelId.includes('2.5') || targetModelId.includes('2.0')) {
-      targetModelId = 'gemini-3.8-flash';
-    }
+    let arch = studioPayload.arch || 'gemini-3';
 
     const generationConfig = {
       temperature: typeof sampling.temperature === 'number' ? sampling.temperature : config.defaultTemperature,
@@ -114,12 +111,35 @@ export class GeminiStudioClient {
       generationConfig.maxOutputTokens = sampling.maxOutputTokens;
     }
 
-    if (supportsPenalties(targetModelId)) {
+    if (supportsPenalties(arch)) {
       if (typeof sampling.frequencyPenalty === 'number' && sampling.frequencyPenalty > 0) {
         generationConfig.frequencyPenalty = sampling.frequencyPenalty;
       }
       if (typeof sampling.presencePenalty === 'number' && sampling.presencePenalty > 0) {
         generationConfig.presencePenalty = sampling.presencePenalty;
+      }
+    }
+
+    if (arch === 'gemini-3') {
+      let level = 'minimal';
+      if (studioPayload.isThinking) level = 'high';
+      if (sampling.reasoningEffort) {
+        const re = String(sampling.reasoningEffort).toLowerCase();
+        if (re === 'low') level = 'low';
+        else if (re === 'medium') level = 'medium';
+        else if (re === 'high') level = 'high';
+        else if (re === 'none') level = 'minimal';
+      }
+      generationConfig.thinkingConfig = { thinkingLevel: level };
+    } else if (arch === 'gemini-2.5') {
+      if (targetModelId.includes('2.5-pro')) {
+        generationConfig.thinkingConfig = {
+          thinkingBudget: studioPayload.isThinking ? Math.max(128, config.thinkingBudgetTokens) : -1
+        };
+      } else {
+        generationConfig.thinkingConfig = {
+          thinkingBudget: studioPayload.isThinking ? config.thinkingBudgetTokens : 0
+        };
       }
     }
 
@@ -141,6 +161,8 @@ export class GeminiStudioClient {
     }
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (abortSignal?.aborted) return;
+
       const apiKey = studioKeyManager.getNextHealthyKey(availableKeys);
       if (!apiKey) throw new Error('No valid Google AI Studio API key provided.');
 
@@ -148,7 +170,13 @@ export class GeminiStudioClient {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModelId}:streamGenerateContent?alt=sse`;
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 25000);
+      const timeoutId = setTimeout(() => controller.abort(), config.requestTimeoutMs);
+
+      const onAbort = () => {
+        controller.abort();
+        clearTimeout(timeoutId);
+      };
+      abortSignal?.addEventListener('abort', onAbort);
 
       let res;
       let hasEmittedTokens = false;
@@ -166,9 +194,16 @@ export class GeminiStudioClient {
         });
       } catch (networkErr) {
         clearTimeout(timeoutId);
+        abortSignal?.removeEventListener('abort', onAbort);
+
+        if (abortSignal?.aborted) return;
+
         lastError = networkErr;
-        console.warn(`[Studio API] Attempt ${attempt + 1} timed out on ${targetModelId}. Retrying...`);
+        console.warn(`[Studio API] Attempt ${attempt + 1} timed out: ${networkErr.message}`);
+        await new Promise((r) => setTimeout(r, 1000));
         continue;
+      } finally {
+        abortSignal?.removeEventListener('abort', onAbort);
       }
 
       if (res.status === 429) {
@@ -181,17 +216,20 @@ export class GeminiStudioClient {
       if (res.status === 503) {
         clearTimeout(timeoutId);
         consecutive503Count++;
-        console.warn(`[Studio API] HTTP 503 (High Demand) on ${targetModelId}.`);
+        console.warn(`[Studio API] HTTP 503 Overloaded on ${targetModelId}.`);
 
         if (consecutive503Count === 2 && targetModelId === 'gemini-3.8-flash') {
-          console.warn(`[Studio API] Cascading to gemini-3.7-flash to bypass queue...`);
+          console.warn(`[Studio API] Cascading to gemini-3.7-flash...`);
           targetModelId = 'gemini-3.7-flash';
-        } else if (consecutive503Count >= 3 && targetModelId !== 'gemini-3.6-flash') {
+        } else if (consecutive503Count === 3 && targetModelId === 'gemini-3.7-flash') {
           console.warn(`[Studio API] Cascading to gemini-3.6-flash...`);
           targetModelId = 'gemini-3.6-flash';
+        } else if (consecutive503Count >= 4 && targetModelId !== 'gemini-3.5-flash') {
+          console.warn(`[Studio API] Cascading to gemini-3.5-flash...`);
+          targetModelId = 'gemini-3.5-flash';
         }
 
-        await new Promise((r) => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 1500));
         continue;
       }
 
@@ -199,6 +237,7 @@ export class GeminiStudioClient {
         clearTimeout(timeoutId);
         console.warn(`[Studio API] Model '${targetModelId}' returned 404. Falling back to 'gemini-3.8-flash'...`);
         targetModelId = 'gemini-3.8-flash';
+        arch = 'gemini-3';
         continue;
       }
 
@@ -209,7 +248,7 @@ export class GeminiStudioClient {
         lastError = new Error(`Google AI Studio HTTP ${res.status}: ${errText}`);
 
         if (res.status === 400 && errText.includes('API_KEY_INVALID')) {
-          studioKeyManager.markCooldown(apiKey, 3600000);
+          studioKeyManager.markCooldown(apiKey, 86400000);
         }
         continue;
       }
@@ -225,6 +264,8 @@ export class GeminiStudioClient {
 
       try {
         while (true) {
+          if (abortSignal?.aborted) break;
+
           const { done, value } = await reader.read();
           if (done) break;
 
@@ -253,14 +294,14 @@ export class GeminiStudioClient {
                   const candidate = parsed.candidates?.[0];
                   if (candidate) {
                     if (candidate.finishReason === 'SAFETY') {
-                      console.warn(`[Studio API] Output blocked (finishReason: SAFETY)`);
+                      console.warn(`[Studio API] Output blocked (SAFETY)`);
                       safetyBlocked = true;
                       lastError = new Error(`Output blocked by safety filter.`);
                     }
 
                     if (Array.isArray(candidate.content?.parts)) {
                       for (const part of candidate.content.parts) {
-                        if (part.thought) continue;
+                        if (part.thought === true) continue;
                         if (typeof part.text === 'string' && part.text.length > 0) {
                           const cleaned = cleaner.process(part.text);
                           if (cleaned) {
@@ -271,8 +312,8 @@ export class GeminiStudioClient {
                       }
                     }
                   }
-                } catch (e) {
-                  // Skip malformed chunk
+                } catch {
+                  // Partial chunk parse skip
                 }
               }
             }
@@ -287,7 +328,7 @@ export class GeminiStudioClient {
 
         clearTimeout(timeoutId);
 
-        if (!hasEmittedTokens) {
+        if (!hasEmittedTokens && !abortSignal?.aborted) {
           if (safetyBlocked) throw lastError || new Error('Google filtered the response.');
           throw new Error('Empty completion received from upstream.');
         }
@@ -295,7 +336,7 @@ export class GeminiStudioClient {
         return;
       } catch (streamErr) {
         clearTimeout(timeoutId);
-        if (hasEmittedTokens) throw streamErr;
+        if (hasEmittedTokens || abortSignal?.aborted) throw streamErr;
         lastError = streamErr;
       } finally {
         reader.releaseLock();
@@ -305,9 +346,9 @@ export class GeminiStudioClient {
     throw lastError || new Error('All Google AI Studio attempts exhausted.');
   }
 
-  static async completeText(studioPayload, availableKeys, sampling = {}) {
+  static async completeText(studioPayload, availableKeys, sampling = {}, abortSignal = null) {
     let fullOutput = '';
-    for await (const chunk of GeminiStudioClient.streamCompletion(studioPayload, availableKeys, sampling)) {
+    for await (const chunk of GeminiStudioClient.streamCompletion(studioPayload, availableKeys, sampling, abortSignal)) {
       fullOutput += chunk;
     }
     const sanitized = cleanText(fullOutput);
