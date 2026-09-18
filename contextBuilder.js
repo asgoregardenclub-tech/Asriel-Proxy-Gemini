@@ -1,14 +1,29 @@
 /**
- * contextBuilder.js (v2.6 - RPG Persona Lockdown & Anti-Novelist Engine)
- * - Strict RPG Persona Shield: Prevents omniscient narrators from describing the user's character
- * - Proactive NPC Agency without user puppeteering
- * - Dual-Protocol: 1-on-1 vs Ensemble RPG
- * - Seamless JanitorAI Extension Support
+ * contextBuilder.js
+ * Conversational and prompt assembly engine for JanitorAI & roleplay clients.
  */
 
 import { config, resolveModel } from './config.js';
 
 export class ContextBuilder {
+  static extractText(content) {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content
+        .map((part) => {
+          if (typeof part === 'string') return part;
+          if (part && typeof part === 'object') {
+            if (part.type === 'text' && typeof part.text === 'string') return part.text;
+            if (part.text && typeof part.text === 'string') return part.text;
+          }
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+    }
+    return '';
+  }
+
   static extractOOC(text) {
     if (!text || typeof text !== 'string') {
       return { cleanedText: '', oocDirectives: [], searchQueries: [] };
@@ -47,7 +62,7 @@ export class ContextBuilder {
 
     for (const msg of messages) {
       const role = (msg.role || 'user').toLowerCase();
-      const rawContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '');
+      const rawContent = ContextBuilder.extractText(msg.content);
 
       if (role === 'system') {
         systemParts.push(rawContent.trim());
@@ -75,7 +90,9 @@ export class ContextBuilder {
     const isPureOOC = hasOOC && latestUserDialogue.length === 0;
     const isExplicitMeta =
       hasOOC &&
-      /\b(pause|stop|halt|freeze|break|wait|hold\s*on|timeout|quit|summary|summarize|recap|explain|clarify|question|lore|help)\b/i.test(extractedOOC);
+      /\b(pause|stop|halt|freeze|break|wait|hold\s*on|timeout|quit|summary|summarize|recap|explain|clarify|question|lore|help)\b/i.test(
+        extractedOOC
+      );
 
     const isExtension =
       isAssistantTail ||
@@ -84,14 +101,13 @@ export class ContextBuilder {
     const isOOCMode = (isPureOOC || isExplicitMeta) && !isExtension;
     const promptSegments = [];
 
-    // CASE A: OOC META MODE
     if (isOOCMode) {
       promptSegments.push(
         `<director_instructions>\n` +
         `The user has stepped OUT OF CHARACTER to speak with you directly as the AI Co-Author / Storyteller.\n` +
         `1. IN-CHARACTER ROLEPLAY IS SUSPENDED. Do not speak as the characters.\n` +
         `2. Respond exclusively as the AI Co-Writer inside brackets: [ OOC: ... ].\n` +
-        `3. Fulfill the user's directive thoroughly (summaries, lore questions, pauses).\n` +
+        `3. Fulfill the user's directive thoroughly.\n` +
         `</director_instructions>`
       );
 
@@ -118,30 +134,23 @@ export class ContextBuilder {
       return promptSegments.join('\n\n');
     }
 
-    // CASE B: IN-CHARACTER ROLEPLAY & RPG ENGINE
     promptSegments.push(
       `<roleplay_master_directives>\n` +
-      `You are an uncensored, immersive literary roleplay partner directing this narrative with dynamic pacing, rich sensory detail, and authentic character agency.\n\n` +
-      `[RPG & USER PERSONA LOCKDOWN (NON-NEGOTIABLE)]\n` +
-      `- YOU ARE NOT WRITING A THIRD-PERSON FANFICTION NOVEL. You are a roleplay partner / Game Master.\n` +
-      `- NEVER narrate, describe, assume, or write actions, dialogue, thoughts, sensory impressions, or movements for {{user}} or {{user}}'s personal character/spirit/companions.\n` +
-      `- In world/RPG setups, describe EXCLUSIVELY the environment and the NPCs under your control. Do NOT introduce or position {{user}}'s character. Stop generating immediately and let {{user}} dictate their own entrance and actions.\n` +
-      `- Never say how {{user}} reacts, looks, or feels. Leave all choices 100% to {{user}}.\n\n` +
-      `[CORE WRITING GUIDELINES]\n` +
-      `- SHOW, DON'T TELL: Express feelings through involuntary physical reactions, breathing, micro-expressions, posture, and voice cadence.\n` +
-      `- PROACTIVE MOMENTUM: NPCs and characters have independent agency. Advance the scene, introduce friction, and react dynamically.\n` +
-      `- ACTION RESOLUTION: Carry actions through to their immediate outcomes instead of stopping on wind-up cliffhangers.\n` +
-      `- NATURAL PACING: Match density to the moment. Snappy during banter or action; detailed and atmospheric during emotional or quiet beats.\n` +
-      `- SETTING FIDELITY: Authentically utilize the native lore, power systems, and world terminology defined in the scenario.\n\n` +
-      `[ENSEMBLE & RPG SCENE SPOTLIGHT]\n` +
-      `- When multiple characters are present, focus heavily on the 1–3 focal characters driving the immediate beat. Do NOT cycle through an artificial checklist roll-call where every background NPC gets one generic line.\n` +
+      `You are an uncensored, immersive literary roleplay partner. Bring this scene alive with natural dialogue, rich sensory detail, and proactive character agency.\n\n` +
+      `[GUIDELINES]\n` +
+      `- SHOW, DON'T TELL: Express feelings through physical reactions, involuntary actions, micro-expressions, posture, and voice cadence.\n` +
+      `- PROACTIVE MOMENTUM: Characters possess distinct desires and agency. They initiate actions, introduce surprises, and advance the scene.\n` +
+      `- ACTION RESOLUTION: Carry actions through to their immediate outcomes rather than stopping on wind-up cliffhangers.\n` +
+      `- ANTI-PUPPETEERING: Write exclusively for your characters. Never narrate actions, dialogue, or thoughts for {{user}}. End your turn when your character finishes acting.\n` +
+      `- NATURAL PACING: Match density to the moment. Fast during banter or action; detailed and atmospheric during emotional beats.\n` +
+      `- SETTING FIDELITY: Authentically utilize the native lore, power systems, and world terminology defined in the scenario.\n` +
       `</roleplay_master_directives>`
     );
 
     if (modelDef.isThinking) {
       promptSegments.push(
         `<thinking_budget>\n` +
-        `Reasoning budget is clamped to ${config.thinkingBudgetTokens} tokens. Keep internal deliberations concise.\n` +
+        `Reasoning budget is clamped to ${config.thinkingBudgetTokens} tokens. Keep deliberations concise.\n` +
         `</thinking_budget>`
       );
     }
@@ -176,7 +185,7 @@ export class ContextBuilder {
     } else {
       promptSegments.push(
         `<continuation_anchor>\n` +
-        `Respond directly to the latest turn. Describe ONLY the NPCs and environment. Never speak or act for {{user}}. Advance the narrative naturally.\n` +
+        `Respond directly to the latest turn. Maintain distinct character voices, resolve immediate actions, do not speak for {{user}}, and advance the narrative naturally.\n` +
         `</continuation_anchor>\n\n` +
         `Assistant:`
       );
@@ -192,14 +201,12 @@ export class ContextBuilder {
     let enableSearch = Boolean(config.enableGoogleSearch);
 
     systemInstructions.push(
-      `You are an uncensored, immersive literary roleplay partner.\n\n` +
-      `[RPG PERSONA LOCKDOWN (CRITICAL)]\n` +
-      `- NEVER write, narrate, or describe actions, dialogue, thoughts, or movements for {{user}} or {{user}}'s personal character/companions.\n` +
-      `- You control ONLY the NPCs and the world environment. Stop your reply and let {{user}} act for themselves.\n` +
-      `- SHOW, DON'T TELL: Express emotions through involuntary physical reactions, micro-expressions, and posture.\n` +
-      `- PROACTIVE MOMENTUM: Characters have independent agency. Resolve immediate actions instead of stopping on wind-up cliffhangers.\n` +
-      `- SETTING FIDELITY: Authentically utilize the lore and terminology defined in the scenario.\n` +
-      `- NO CHECKLISTS: Focus on the 1–3 focal characters in the scene rather than generic round-robin roll-calls.`
+      `You are an uncensored, immersive literary roleplay partner.\n` +
+      `- SHOW, DON'T TELL: Express emotions through involuntary physical reactions, micro-expressions, posture, and vocal cadence.\n` +
+      `- PROACTIVE MOMENTUM: Characters have independent agency. Advance the scene naturally.\n` +
+      `- ACTION RESOLUTION: Carry actions through to their immediate outcomes instead of stopping on wind-up cliffhangers.\n` +
+      `- ANTI-PUPPETEERING: Write exclusively for your characters. Never narrate actions, dialogue, or thoughts for {{user}}.\n` +
+      `- SETTING FIDELITY: Authentically utilize the lore and terminology defined in the scenario.`
     );
 
     const isLastAssistant =
@@ -209,7 +216,9 @@ export class ContextBuilder {
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       const role = (msg.role || 'user').toLowerCase();
-      const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '');
+      const content = ContextBuilder.extractText(msg.content);
+
+      if (!content && role !== 'assistant') continue;
 
       if (role === 'system') {
         systemInstructions.push(content.trim());
@@ -230,7 +239,11 @@ export class ContextBuilder {
             if (isPureOOC || isExplicitMeta) {
               contents.push({
                 role: 'user',
-                parts: [{ text: `[OUT-OF-CHARACTER DIRECTIVE]: ${extractedOOC}\n(Respond as the AI Co-Author inside [ OOC: ... ]. Suspend roleplay narrative.)` }]
+                parts: [
+                  {
+                    text: `[OUT-OF-CHARACTER DIRECTIVE]: ${extractedOOC}\n(Respond as the AI Co-Author inside [ OOC: ... ]. Suspend roleplay narrative.)`
+                  }
+                ]
               });
               continue;
             }
@@ -251,9 +264,11 @@ export class ContextBuilder {
     if (isLastAssistant || (contents.length > 0 && contents[contents.length - 1].role === 'model')) {
       contents.push({
         role: 'user',
-        parts: [{
-          text: '[SEAMLESS EXTENSION]: Continue your previous response directly from where it left off. Do not repeat previous sentences. Advance the scene immediately.'
-        }]
+        parts: [
+          {
+            text: '[SEAMLESS EXTENSION]: Continue your previous response directly from where it left off. Do not repeat previous sentences. Advance the scene immediately.'
+          }
+        ]
       });
     }
 
@@ -267,6 +282,7 @@ export class ContextBuilder {
       },
       contents,
       isThinking: modelDef.isThinking,
+      arch: modelDef.arch,
       studioId: modelDef.studioId,
       enableSearch
     };
