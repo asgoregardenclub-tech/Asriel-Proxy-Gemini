@@ -1,10 +1,9 @@
 /**
  * server.js
- * Asriel-Proxy-Gemini v2.0 - Hybrid OpenAI-Compatible HTTP Server
- * Supports:
- * - Free Anonymous Guest Web Mode (Zero-Key)
- * - Direct Google AI Studio API Mode with Multi-Key Pool & 429 Failover
- * - Universal URL path handling (/v1, /v1/chat/completions, /chat/completions, /)
+ * Asriel-Proxy-Gemini v2.4
+ * - Full JanitorAI Slider Passthrough (temp, top_p, max_tokens, penalties)
+ * - Dual-Engine Routing (Studio API Multi-Key vs Free Guest Web)
+ * - Universal Path Routing (/v1, /v1/chat/completions, /chat/completions)
  */
 
 import http from 'node:http';
@@ -15,7 +14,6 @@ import { ContextBuilder } from './contextBuilder.js';
 import { GeminiGuestClient } from './geminiGuestClient.js';
 import { GeminiStudioClient, studioKeyManager } from './geminiStudioClient.js';
 
-// ANSI Color Palette
 const isTTY = Boolean(process.stdout.isTTY || process.env.TERM);
 const c = {
   reset: isTTY ? '\x1b[0m' : '',
@@ -35,10 +33,10 @@ function getTimestamp() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function logIncoming(model, engine, isStream) {
+function logIncoming(model, engine, isStream, temp) {
   const ts = getTimestamp();
   console.log(
-    `${c.dim}[${ts}]${c.reset} ${c.yellow}${c.bold}[INCOMING]${c.reset} JanitorAI -> Model: ${c.cyan}${model}${c.reset} | Engine: ${c.green}${engine}${c.reset} | Stream: ${c.magenta}${isStream}${c.reset}`
+    `${c.dim}[${ts}]${c.reset} ${c.yellow}${c.bold}[INCOMING]${c.reset} JanitorAI -> Model: ${c.cyan}${model}${c.reset} | Engine: ${c.green}${engine}${c.reset} | Stream: ${c.magenta}${isStream}${c.reset} | Temp: ${c.cyan}${temp}${c.reset}`
   );
 }
 
@@ -93,19 +91,17 @@ const server = http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = parsedUrl.pathname.replace(/\/+$/, '') || '/';
 
-  // Health check
   if ((pathname === '/' || pathname === '/health') && req.method === 'GET') {
     sendJson(res, 200, {
       status: 'online',
       service: 'Asriel-Proxy-Gemini',
-      version: '2.0.0 (Hybrid Multi-Key)',
+      version: '2.4.0 (Enhanced Roleplay Core)',
       guest_sessions_active: sessionPool.getActiveCount(),
       default_model: config.defaultModel
     });
     return;
   }
 
-  // GET /v1/models or GET /models or GET /v1
   if ((pathname === '/v1/models' || pathname === '/models' || pathname === '/v1') && req.method === 'GET') {
     const modelsList = Object.entries(config.modelMappings).map(([id, info]) => ({
       id,
@@ -122,8 +118,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Universal Route Matcher for Chat Completions:
-  // Catches /v1/chat/completions, /chat/completions, /v1, or / on POST
   const isChatCompletion =
     req.method === 'POST' &&
     (pathname.includes('/chat/completions') ||
@@ -142,7 +136,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const { model = config.defaultModel, messages = [], stream = false, temperature = 0.8 } = payload;
+    const { model = config.defaultModel, messages = [], stream = false } = payload;
 
     if (!Array.isArray(messages) || messages.length === 0) {
       sendJson(res, 400, {
@@ -151,7 +145,15 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // Multi-Key Pool & Hybrid Engine Detection
+    // Dynamic JanitorAI UI Slider Passthrough
+    const sampling = {
+      temperature: typeof payload.temperature === 'number' ? payload.temperature : config.defaultTemperature,
+      topP: typeof payload.top_p === 'number' ? payload.top_p : config.defaultTopP,
+      maxOutputTokens: typeof payload.max_tokens === 'number' ? payload.max_tokens : (typeof payload.max_output_tokens === 'number' ? payload.max_output_tokens : undefined),
+      frequencyPenalty: typeof payload.frequency_penalty === 'number' ? payload.frequency_penalty : config.defaultFrequencyPenalty,
+      presencePenalty: typeof payload.presence_penalty === 'number' ? payload.presence_penalty : config.defaultPresencePenalty
+    };
+
     const authHeader = req.headers.authorization || '';
     const availableKeys = studioKeyManager.extractKeys(authHeader);
     const isStudioMode = availableKeys.length > 0;
@@ -160,7 +162,7 @@ const server = http.createServer(async (req, res) => {
       : 'Guest Web (Free Zero-Key)';
 
     const turnCount = messages.length;
-    logIncoming(model, engineName, stream);
+    logIncoming(model, engineName, stream, sampling.temperature);
 
     const completionId = `chatcmpl-${crypto.randomUUID()}`;
     const createdTimestamp = Math.floor(Date.now() / 1000);
@@ -195,7 +197,7 @@ const server = http.createServer(async (req, res) => {
         let tokenStream;
         if (isStudioMode) {
           const studioPayload = ContextBuilder.buildStudioPayload(messages, model);
-          tokenStream = GeminiStudioClient.streamCompletion(studioPayload, availableKeys, temperature);
+          tokenStream = GeminiStudioClient.streamCompletion(studioPayload, availableKeys, sampling);
         } else {
           const guestPrompt = ContextBuilder.buildGuestPrompt(messages, model);
           const conversationId =
@@ -247,7 +249,7 @@ const server = http.createServer(async (req, res) => {
       let completionText = '';
       if (isStudioMode) {
         const studioPayload = ContextBuilder.buildStudioPayload(messages, model);
-        completionText = await GeminiStudioClient.completeText(studioPayload, availableKeys, temperature);
+        completionText = await GeminiStudioClient.completeText(studioPayload, availableKeys, sampling);
       } else {
         const guestPrompt = ContextBuilder.buildGuestPrompt(messages, model);
         const conversationId =
@@ -288,14 +290,14 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(config.port, config.host, async () => {
   console.log(`${c.cyan}====================================================${c.reset}`);
-  console.log(`${c.cyan}${c.bold}   ASRIEL-PROXY-GEMINI v2.0 (HYBRID MULTI-KEY)      ${c.reset}`);
+  console.log(`${c.cyan}${c.bold}   ASRIEL-PROXY-GEMINI v2.4 (ENHANCED CORE)         ${c.reset}`);
   console.log(`${c.cyan}====================================================${c.reset}`);
   console.log(`[Host Binding]     : http://${config.host}:${config.port}`);
   console.log(`[JanitorAI URL]    : http://localhost:${config.port}/v1`);
   console.log(`[Default Model]    : ${config.defaultModel}`);
-  console.log(`[Studio Engine]    : Multi-Key Pool & 429 Failover Active`);
-  console.log(`[Guest Engine]     : Free Anonymous Web Sessions`);
-  console.log(`[Pacing System]    : GFJ-Grade Dynamic Density & Proactive Agency`);
+  console.log(`[Anti-Puppeteer]   : Active (Never speaks for {{user}})`);
+  console.log(`[Anti-Catchphrase] : Active (Freq Decay: ${config.defaultFrequencyPenalty})`);
+  console.log(`[Janitor Sliders]  : Temp, Top-P, Max Tokens, Penalties Forwarded`);
   console.log('----------------------------------------------------');
 
   await sessionPool.initialize();
