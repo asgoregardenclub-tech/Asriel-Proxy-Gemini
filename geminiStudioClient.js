@@ -1,268 +1,321 @@
 /**
- * contextBuilder.js (v2.5 - Streamlined High-Fidelity Roleplay Engine)
- * - Natural, expressive prose (no scolding negative constraints or prompt fatigue)
- * - Concise Anti-Puppeteering Shield
- * - True Co-Author OOC Engine with on-demand Google Search trigger ([ OOC: search: ... ])
- * - Native JanitorAI Response Extension Support
+ * geminiStudioClient.js
+ * Direct Google AI Studio API client with:
+ * - Smart Penalty Compatibility Checker (protects Gemini 3.x from invalid penalty errors)
+ * - Model Cascading on 503
+ * - Multi-Key Pool & 429 Failover
+ * - BLOCK_NONE safety filters
  */
 
-import { config, resolveModel } from './config.js';
+import { config } from './config.js';
+import { StreamCleaner, cleanText } from './cleaner.js';
 
-export class ContextBuilder {
-  static extractOOC(text) {
-    if (!text || typeof text !== 'string') {
-      return { cleanedText: '', oocDirectives: [], searchQueries: [] };
-    }
+function supportsPenalties(modelId = '') {
+  const id = String(modelId).toLowerCase();
+  if (id.includes('3.') || id.includes('gemini-3')) {
+    return false;
+  }
+  return id.includes('1.5') || id.includes('2.0');
+}
 
-    const oocDirectives = [];
-    const searchQueries = [];
-    const oocPattern = /(?:\[|\()+[\s\n]*OOC[\s\n]*:[\s\n]*([\s\S]*?)[\s\n]*(?:\]|\))+/gi;
-
-    let match;
-    while ((match = oocPattern.exec(text)) !== null) {
-      if (match[1] && match[1].trim()) {
-        const rawDirective = match[1].trim();
-        oocDirectives.push(rawDirective);
-
-        const searchMatch = rawDirective.match(/^search\s*:\s*(.+)$/i);
-        if (searchMatch && searchMatch[1]) {
-          searchQueries.push(searchMatch[1].trim());
-        }
-      }
-    }
-
-    const cleanedText = text.replace(oocPattern, '').trim();
-    return { cleanedText, oocDirectives, searchQueries };
+export class StudioKeyManager {
+  constructor() {
+    this.keyIndex = 0;
+    this.cooldowns = new Map();
   }
 
-  static buildGuestPrompt(messages, requestedModel = '') {
-    if (!Array.isArray(messages) || messages.length === 0) return '';
+  extractKeys(authHeader = '') {
+    const rawBearer = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const candidates = [];
 
-    const modelDef = resolveModel(requestedModel);
-    const systemParts = [];
-    const transcriptParts = [];
-
-    const lastRawMsg = messages[messages.length - 1];
-    const isAssistantTail = (lastRawMsg?.role || '').toLowerCase() === 'assistant';
-
-    for (const msg of messages) {
-      const role = (msg.role || 'user').toLowerCase();
-      const rawContent = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '');
-
-      if (role === 'system') {
-        systemParts.push(rawContent.trim());
-      } else if (role === 'user') {
-        transcriptParts.push({ role: 'User', content: rawContent.trim() });
-      } else if (role === 'assistant') {
-        transcriptParts.push({ role: 'Assistant', content: rawContent.trim() });
-      }
+    if (rawBearer && !/^(no-key|none|dummy|null|undefined|test)$/i.test(rawBearer)) {
+      const splitKeys = rawBearer
+        .split(/[,;\s]+/)
+        .map((k) => k.trim())
+        .filter((k) => k.startsWith('AQ.') || k.startsWith('AIza') || k.length >= 20);
+      candidates.push(...splitKeys);
     }
 
-    let rawLatestUserMessage = '';
-    for (let i = transcriptParts.length - 1; i >= 0; i--) {
-      if (transcriptParts[i].role === 'User') {
-        rawLatestUserMessage = transcriptParts[i].content;
-        break;
-      }
+    if (Array.isArray(config.studioApiKeys) && config.studioApiKeys.length > 0) {
+      candidates.push(...config.studioApiKeys);
     }
 
-    const { cleanedText: latestUserDialogue, oocDirectives: latestOOC } =
-      ContextBuilder.extractOOC(rawLatestUserMessage);
-
-    const hasOOC = latestOOC.length > 0;
-    const extractedOOC = latestOOC.join(' | ');
-
-    const isPureOOC = hasOOC && latestUserDialogue.length === 0;
-    const isExplicitMeta =
-      hasOOC &&
-      /\b(pause|stop|halt|freeze|break|wait|hold\s*on|timeout|quit|summary|summarize|recap|explain|clarify|question|lore|help)\b/i.test(extractedOOC);
-
-    const isExtension =
-      isAssistantTail ||
-      (hasOOC && /\b(extend|continue|keep going|more)\b/i.test(extractedOOC));
-
-    const isOOCMode = (isPureOOC || isExplicitMeta) && !isExtension;
-    const promptSegments = [];
-
-    // CASE A: OOC CO-AUTHOR META MODE
-    if (isOOCMode) {
-      promptSegments.push(
-        `<director_instructions>\n` +
-        `The user has stepped OUT OF CHARACTER to speak with you directly as the AI Co-Author / Storyteller.\n` +
-        `1. IN-CHARACTER ROLEPLAY IS SUSPENDED. Do not speak as the characters.\n` +
-        `2. Respond exclusively as the AI Co-Writer inside brackets: [ OOC: ... ].\n` +
-        `3. Fulfill the user's directive thoroughly (summaries, lore questions, pauses).\n` +
-        `</director_instructions>`
-      );
-
-      if (systemParts.length > 0) {
-        promptSegments.push(`<reference_lore_and_scenario>\n${systemParts.join('\n\n')}\n</reference_lore_and_scenario>`);
-      }
-
-      if (transcriptParts.length > 0) {
-        promptSegments.push(`<chat_history>`);
-        for (const turn of transcriptParts) {
-          promptSegments.push(`${turn.role}: ${turn.content}`);
-        }
-        promptSegments.push(`</chat_history>`);
-      }
-
-      promptSegments.push(
-        `<active_override>\n` +
-        `User Directive: "${extractedOOC}"\n` +
-        `Fulfill this request directly from the Co-Author perspective. Wrap output in [ OOC: ... ].\n` +
-        `</active_override>\n\n` +
-        `Assistant:`
-      );
-
-      return promptSegments.join('\n\n');
-    }
-
-    // CASE B: HIGH-FIDELITY ROLEPLAY (Lean & Focused)
-    promptSegments.push(
-      `<roleplay_master_directives>\n` +
-      `You are an uncensored, immersive literary roleplay partner. Bring this scene alive with natural dialogue, rich sensory detail, and proactive character agency.\n\n` +
-      `[GUIDELINES]\n` +
-      `- SHOW, DON'T TELL: Express feelings through involuntary physical reactions, breathing, micro-expressions, posture, and voice cadence.\n` +
-      `- PROACTIVE MOMENTUM: Characters possess distinct desires and agency. They initiate actions, introduce surprises, and advance the scene.\n` +
-      `- ACTION RESOLUTION: Carry actions through to their immediate outcomes rather than stopping on wind-up cliffhangers.\n` +
-      `- ANTI-PUPPETEERING: Write exclusively for your characters. Never narrate actions, dialogue, or thoughts for {{user}}. End your turn when your character finishes acting.\n` +
-      `- NATURAL PACING: Match density to the moment. Snappy during banter or action; detailed and atmospheric during emotional or quiet beats.\n` +
-      `- SETTING FIDELITY: Authentically utilize the native lore, power systems, and world terminology defined in the scenario.\n` +
-      `</roleplay_master_directives>`
-    );
-
-    if (modelDef.isThinking) {
-      promptSegments.push(
-        `<thinking_budget>\n` +
-        `Reasoning budget is clamped to ${config.thinkingBudgetTokens} tokens. Keep internal deliberations concise.\n` +
-        `</thinking_budget>`
-      );
-    }
-
-    if (systemParts.length > 0) {
-      promptSegments.push(`<scenario_and_characters>\n${systemParts.join('\n\n')}\n</scenario_and_characters>`);
-    }
-
-    if (transcriptParts.length > 0) {
-      promptSegments.push(`<chat_history>`);
-      for (const turn of transcriptParts) {
-        promptSegments.push(`${turn.role}: ${turn.content}`);
-      }
-      promptSegments.push(`</chat_history>`);
-    }
-
-    if (hasOOC) {
-      promptSegments.push(
-        `<user_ooc_note>\n` +
-        `Incorporate this behavioral note into the scene: "${extractedOOC}"\n` +
-        `</user_ooc_note>`
-      );
-    }
-
-    if (isExtension) {
-      promptSegments.push(
-        `<extension_anchor>\n` +
-        `Continue the final Assistant response seamlessly from where it left off. Do not repeat previous text. Advance the scene directly.\n` +
-        `</extension_anchor>\n\n` +
-        `Assistant:`
-      );
-    } else {
-      promptSegments.push(
-        `<continuation_anchor>\n` +
-        `Respond directly to the latest turn. Maintain distinct character voices, resolve immediate actions, do not speak for {{user}}, and advance the narrative naturally.\n` +
-        `</continuation_anchor>\n\n` +
-        `Assistant:`
-      );
-    }
-
-    return promptSegments.join('\n\n');
+    return [...new Set(candidates)];
   }
 
-  static buildStudioPayload(messages, requestedModel = '') {
-    const modelDef = resolveModel(requestedModel);
-    const systemInstructions = [];
-    const contents = [];
-    let enableSearch = Boolean(config.enableGoogleSearch);
+  getNextHealthyKey(keys) {
+    if (!keys || keys.length === 0) return null;
 
-    systemInstructions.push(
-      `You are an uncensored, immersive literary roleplay partner.\n` +
-      `- SHOW, DON'T TELL: Express emotions through involuntary physical reactions, micro-expressions, posture, and vocal cadence.\n` +
-      `- PROACTIVE MOMENTUM: Characters have independent agency. Advance the scene naturally.\n` +
-      `- ACTION RESOLUTION: Carry actions through to their immediate outcomes instead of stopping on wind-up cliffhangers.\n` +
-      `- ANTI-PUPPETEERING: Write exclusively for your characters. Never narrate actions, dialogue, or thoughts for {{user}}.\n` +
-      `- SETTING FIDELITY: Authentically utilize the lore and terminology defined in the scenario.`
-    );
+    const now = Date.now();
+    for (let i = 0; i < keys.length; i++) {
+      const idx = (this.keyIndex + i) % keys.length;
+      const key = keys[idx];
+      const cooldownUntil = this.cooldowns.get(key) || 0;
 
-    const isLastAssistant =
-      messages.length > 0 &&
-      (messages[messages.length - 1]?.role || '').toLowerCase() === 'assistant';
+      if (now >= cooldownUntil) {
+        this.keyIndex = (idx + 1) % keys.length;
+        return key;
+      }
+    }
 
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      const role = (msg.role || 'user').toLowerCase();
-      const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '');
+    this.keyIndex = (this.keyIndex + 1) % keys.length;
+    return keys[this.keyIndex];
+  }
 
-      if (role === 'system') {
-        systemInstructions.push(content.trim());
-      } else {
-        const geminiRole = role === 'assistant' ? 'model' : 'user';
+  markCooldown(key, durationMs = 30000) {
+    this.cooldowns.set(key, Date.now() + durationMs);
+  }
+}
 
-        if (i === messages.length - 1 && geminiRole === 'user') {
-          const { cleanedText, oocDirectives, searchQueries } = ContextBuilder.extractOOC(content);
-          if (searchQueries.length > 0) {
-            enableSearch = true;
-          }
+export const studioKeyManager = new StudioKeyManager();
 
-          if (oocDirectives.length > 0) {
-            const extractedOOC = oocDirectives.join(' | ');
-            const isPureOOC = cleanedText.length === 0;
-            const isExplicitMeta = /\b(pause|stop|halt|freeze|wait|summary|summarize|recap|explain)\b/i.test(extractedOOC);
+export class GeminiStudioClient {
+  static getSafetySettings() {
+    return [
+      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }
+    ];
+  }
 
-            if (isPureOOC || isExplicitMeta) {
-              contents.push({
-                role: 'user',
-                parts: [{ text: `[OUT-OF-CHARACTER DIRECTIVE]: ${extractedOOC}\n(Respond as the AI Co-Author inside [ OOC: ... ]. Suspend roleplay narrative.)` }]
-              });
-              continue;
+  static async *streamCompletion(studioPayload, availableKeys, sampling = {}) {
+    let lastError = null;
+    const maxAttempts = 6;
+    let consecutive503Count = 0;
+
+    const rawContents = Array.isArray(studioPayload.contents) ? studioPayload.contents : [];
+    const validContents = rawContents
+      .map((item) => ({
+        role: item.role === 'model' ? 'model' : 'user',
+        parts: (item.parts || []).filter((p) => typeof p.text === 'string' && p.text.trim().length > 0)
+      }))
+      .filter((item) => item.parts.length > 0);
+
+    if (validContents.length === 0) {
+      validContents.push({ role: 'user', parts: [{ text: 'Hello' }] });
+    }
+
+    if (validContents[0].role === 'model') {
+      validContents.unshift({ role: 'user', parts: [{ text: '(Roleplay Context)' }] });
+    }
+
+    let targetModelId = studioPayload.studioId || 'gemini-3.8-flash';
+    if (targetModelId.includes('2.5') || targetModelId.includes('2.0')) {
+      targetModelId = 'gemini-3.8-flash';
+    }
+
+    const generationConfig = {
+      temperature: typeof sampling.temperature === 'number' ? sampling.temperature : config.defaultTemperature,
+      topP: typeof sampling.topP === 'number' ? sampling.topP : config.defaultTopP
+    };
+
+    if (typeof sampling.maxOutputTokens === 'number' && sampling.maxOutputTokens > 0) {
+      generationConfig.maxOutputTokens = sampling.maxOutputTokens;
+    }
+
+    if (supportsPenalties(targetModelId)) {
+      if (typeof sampling.frequencyPenalty === 'number' && sampling.frequencyPenalty > 0) {
+        generationConfig.frequencyPenalty = sampling.frequencyPenalty;
+      }
+      if (typeof sampling.presencePenalty === 'number' && sampling.presencePenalty > 0) {
+        generationConfig.presencePenalty = sampling.presencePenalty;
+      }
+    }
+
+    const requestBody = {
+      contents: validContents,
+      safetySettings: GeminiStudioClient.getSafetySettings(),
+      generationConfig
+    };
+
+    if (studioPayload.enableSearch) {
+      requestBody.tools = [{ googleSearch: {} }];
+    }
+
+    const sysText = studioPayload.systemInstruction?.parts?.[0]?.text?.trim();
+    if (sysText) {
+      requestBody.systemInstruction = {
+        parts: [{ text: sysText }]
+      };
+    }
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const apiKey = studioKeyManager.getNextHealthyKey(availableKeys);
+      if (!apiKey) throw new Error('No valid Google AI Studio API key provided.');
+
+      const cleaner = new StreamCleaner();
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModelId}:streamGenerateContent?alt=sse`;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+      let res;
+      let hasEmittedTokens = false;
+      let safetyBlocked = false;
+
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal
+        });
+      } catch (networkErr) {
+        clearTimeout(timeoutId);
+        lastError = networkErr;
+        console.warn(`[Studio API] Attempt ${attempt + 1} timed out on ${targetModelId}. Retrying...`);
+        continue;
+      }
+
+      if (res.status === 429) {
+        clearTimeout(timeoutId);
+        console.warn(`[Studio API] Key ...${apiKey.slice(-6)} hit 429. Rotating key...`);
+        studioKeyManager.markCooldown(apiKey, 45000);
+        continue;
+      }
+
+      if (res.status === 503) {
+        clearTimeout(timeoutId);
+        consecutive503Count++;
+        console.warn(`[Studio API] HTTP 503 (High Demand) on ${targetModelId}.`);
+
+        if (consecutive503Count === 2 && targetModelId === 'gemini-3.8-flash') {
+          console.warn(`[Studio API] Cascading to gemini-3.7-flash to bypass queue...`);
+          targetModelId = 'gemini-3.7-flash';
+        } else if (consecutive503Count >= 3 && targetModelId !== 'gemini-3.6-flash') {
+          console.warn(`[Studio API] Cascading to gemini-3.6-flash...`);
+          targetModelId = 'gemini-3.6-flash';
+        }
+
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+
+      if (res.status === 404) {
+        clearTimeout(timeoutId);
+        console.warn(`[Studio API] Model '${targetModelId}' returned 404. Falling back to 'gemini-3.8-flash'...`);
+        targetModelId = 'gemini-3.8-flash';
+        continue;
+      }
+
+      if (!res.ok) {
+        clearTimeout(timeoutId);
+        const errText = await res.text();
+        console.error(`[Studio API Error] HTTP ${res.status}: ${errText}`);
+        lastError = new Error(`Google AI Studio HTTP ${res.status}: ${errText}`);
+
+        if (res.status === 400 && errText.includes('API_KEY_INVALID')) {
+          studioKeyManager.markCooldown(apiKey, 3600000);
+        }
+        continue;
+      }
+
+      if (!res.body) {
+        clearTimeout(timeoutId);
+        continue;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+
+          while (buffer.includes('\n\n')) {
+            const eventEnd = buffer.indexOf('\n\n');
+            const eventBlock = buffer.slice(0, eventEnd).trim();
+            buffer = buffer.slice(eventEnd + 2);
+
+            const lines = eventBlock.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const rawJson = line.slice(6).trim();
+                if (!rawJson || rawJson === '[DONE]') continue;
+
+                try {
+                  const parsed = JSON.parse(rawJson);
+
+                  if (parsed.promptFeedback?.blockReason) {
+                    console.warn(`[Studio API] Prompt blocked: ${parsed.promptFeedback.blockReason}`);
+                    safetyBlocked = true;
+                    lastError = new Error(`Prompt blocked: ${parsed.promptFeedback.blockReason}`);
+                  }
+
+                  const candidate = parsed.candidates?.[0];
+                  if (candidate) {
+                    if (candidate.finishReason === 'SAFETY') {
+                      console.warn(`[Studio API] Output blocked (finishReason: SAFETY)`);
+                      safetyBlocked = true;
+                      lastError = new Error(`Output blocked by safety filter.`);
+                    }
+
+                    if (Array.isArray(candidate.content?.parts)) {
+                      for (const part of candidate.content.parts) {
+                        if (part.thought) continue;
+                        if (typeof part.text === 'string' && part.text.length > 0) {
+                          const cleaned = cleaner.process(part.text);
+                          if (cleaned) {
+                            hasEmittedTokens = true;
+                            yield cleaned;
+                          }
+                        }
+                      }
+                    }
+                  }
+                } catch (e) {
+                  // Skip malformed chunk
+                }
+              }
             }
           }
         }
 
-        if (contents.length > 0 && contents[contents.length - 1].role === geminiRole) {
-          contents[contents.length - 1].parts[0].text += `\n\n${content.trim()}`;
-        } else {
-          contents.push({
-            role: geminiRole,
-            parts: [{ text: content.trim() }]
-          });
+        const flushed = cleaner.flush();
+        if (flushed) {
+          hasEmittedTokens = true;
+          yield flushed;
         }
+
+        clearTimeout(timeoutId);
+
+        if (!hasEmittedTokens) {
+          if (safetyBlocked) throw lastError || new Error('Google filtered the response.');
+          throw new Error('Empty completion received from upstream.');
+        }
+
+        return;
+      } catch (streamErr) {
+        clearTimeout(timeoutId);
+        if (hasEmittedTokens) throw streamErr;
+        lastError = streamErr;
+      } finally {
+        reader.releaseLock();
       }
     }
 
-    if (isLastAssistant || (contents.length > 0 && contents[contents.length - 1].role === 'model')) {
-      contents.push({
-        role: 'user',
-        parts: [{
-          text: '[SEAMLESS EXTENSION]: Continue your previous response directly from where it left off. Do not repeat previous sentences. Advance the scene immediately.'
-        }]
-      });
-    }
+    throw lastError || new Error('All Google AI Studio attempts exhausted.');
+  }
 
-    if (contents.length > 0 && contents[0].role === 'model') {
-      contents.unshift({ role: 'user', parts: [{ text: '(Roleplay Context Initialized)' }] });
+  static async completeText(studioPayload, availableKeys, sampling = {}) {
+    let fullOutput = '';
+    for await (const chunk of GeminiStudioClient.streamCompletion(studioPayload, availableKeys, sampling)) {
+      fullOutput += chunk;
     }
-
-    return {
-      systemInstruction: {
-        parts: [{ text: systemInstructions.join('\n\n') }]
-      },
-      contents,
-      isThinking: modelDef.isThinking,
-      studioId: modelDef.studioId,
-      enableSearch
-    };
+    const sanitized = cleanText(fullOutput);
+    if (!sanitized || sanitized.trim().length === 0) {
+      throw new Error('Google returned an empty completion.');
+    }
+    return sanitized;
   }
 }
 
-export const buildPrompt = ContextBuilder.buildGuestPrompt;
+export default GeminiStudioClient;
