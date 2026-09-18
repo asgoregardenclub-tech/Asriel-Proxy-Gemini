@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# tunnel.sh
-# Creates a free, secure Cloudflare HTTPS tunnel for Asriel-Proxy-Gemini.
+# Cloudflare HTTPS tunnel for Asriel-Proxy-Gemini
 
 set -e
 
@@ -9,7 +8,7 @@ BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR"
 
 if ! command -v cloudflared >/dev/null 2>&1; then
-    echo "[SETUP] cloudflared not found. Downloading static standalone binary..."
+    echo "[SETUP] Downloading cloudflared binary..."
     ARCH=$(uname -m)
     case "$ARCH" in
         x86_64) URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ;;
@@ -27,7 +26,7 @@ echo "==================================================="
 echo "  Asriel-Proxy-Gemini : Cloudflare Remote Tunnel   "
 echo "==================================================="
 echo "[INFO] Connecting tunnel to http://localhost:${PORT}..."
-echo "[INFO] Look for the 'https://...trycloudflare.com' address below."
+echo "[INFO] Copy the 'https://...trycloudflare.com' URL below."
 echo "[INFO] In JanitorAI, set Proxy URL to: https://YOUR-TUNNEL-URL/v1"
 echo "---------------------------------------------------"
 
