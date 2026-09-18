@@ -1,14 +1,12 @@
 /**
  * server.js
- * Asriel-Proxy-Gemini v2.4
- * - Full JanitorAI Slider Passthrough (temp, top_p, max_tokens, penalties)
- * - Dual-Engine Routing (Studio API Multi-Key vs Free Guest Web)
- * - Universal Path Routing (/v1, /v1/chat/completions, /chat/completions)
+ * Reverse proxy handling OpenAI-compatible endpoints, SSE streaming,
+ * multi-key AI Studio dispatch, and client-disconnect abort signaling.
  */
 
 import http from 'node:http';
 import crypto from 'node:crypto';
-import { config, resolveModel } from './config.js';
+import { config } from './config.js';
 import { sessionPool } from './sessionPool.js';
 import { ContextBuilder } from './contextBuilder.js';
 import { GeminiGuestClient } from './geminiGuestClient.js';
@@ -36,33 +34,32 @@ function getTimestamp() {
 function logIncoming(model, engine, isStream, temp) {
   const ts = getTimestamp();
   console.log(
-    `${c.dim}[${ts}]${c.reset} ${c.yellow}${c.bold}[INCOMING]${c.reset} JanitorAI -> Model: ${c.cyan}${model}${c.reset} | Engine: ${c.green}${engine}${c.reset} | Stream: ${c.magenta}${isStream}${c.reset} | Temp: ${c.cyan}${temp}${c.reset}`
+    `${c.dim}[${ts}]${c.reset} ${c.yellow}${c.bold}[INCOMING]${c.reset} Model: ${c.cyan}${model}${c.reset} | Engine: ${c.green}${engine}${c.reset} | Stream: ${c.magenta}${isStream}${c.reset} | Temp: ${c.cyan}${temp}${c.reset}`
   );
 }
 
 function logSuccess(turnCount, engine) {
   const ts = getTimestamp();
   console.log(
-    `${c.dim}[${ts}]${c.reset} ${c.green}${c.bold}[SUCCESS]${c.reset} Dispatched to JanitorAI (${turnCount} turns in context | ${engine})`
+    `${c.dim}[${ts}]${c.reset} ${c.green}${c.bold}[SUCCESS]${c.reset} Response dispatched (${turnCount} turns | ${engine})`
   );
 }
 
 function logRotate() {
   const ts = getTimestamp();
-  console.log(
-    `${c.dim}[${ts}]${c.reset} ${c.blue}${c.bold}[INFO]${c.reset} Rotating to fresh Gemini guest session...`
-  );
+  console.log(`${c.dim}[${ts}]${c.reset} ${c.blue}${c.bold}[INFO]${c.reset} Rotating to fresh Gemini guest session...`);
 }
 
 sessionPool.setOnRotate(logRotate);
 
-function applyCors(req, res) {
+function applyCors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Session-ID, X-Requested-With');
 }
 
 function sendJson(res, statusCode, data) {
+  applyCors(res);
   res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(data));
 }
@@ -72,7 +69,9 @@ async function readBody(req) {
     let body = '';
     req.on('data', (chunk) => {
       body += chunk;
-      if (body.length > 100 * 1024 * 1024) reject(new Error('Payload too large'));
+      if (body.length > 25 * 1024 * 1024) {
+        reject(new Error('Payload exceeds 25MB limit.'));
+      }
     });
     req.on('end', () => resolve(body));
     req.on('error', reject);
@@ -80,7 +79,7 @@ async function readBody(req) {
 }
 
 const server = http.createServer(async (req, res) => {
-  applyCors(req, res);
+  applyCors(res);
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
@@ -91,17 +90,19 @@ const server = http.createServer(async (req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = parsedUrl.pathname.replace(/\/+$/, '') || '/';
 
+  // Health check
   if ((pathname === '/' || pathname === '/health') && req.method === 'GET') {
     sendJson(res, 200, {
       status: 'online',
       service: 'Asriel-Proxy-Gemini',
-      version: '2.4.0 (Enhanced Roleplay Core)',
+      version: '2.5.0',
       guest_sessions_active: sessionPool.getActiveCount(),
       default_model: config.defaultModel
     });
     return;
   }
 
+  // Models listing
   if ((pathname === '/v1/models' || pathname === '/models' || pathname === '/v1') && req.method === 'GET') {
     const modelsList = Object.entries(config.modelMappings).map(([id, info]) => ({
       id,
@@ -120,9 +121,7 @@ const server = http.createServer(async (req, res) => {
 
   const isChatCompletion =
     req.method === 'POST' &&
-    (pathname.includes('/chat/completions') ||
-     pathname === '/v1' ||
-     pathname === '/');
+    (pathname.includes('/chat/completions') || pathname === '/v1' || pathname === '/');
 
   if (isChatCompletion) {
     let payload;
@@ -140,26 +139,33 @@ const server = http.createServer(async (req, res) => {
 
     if (!Array.isArray(messages) || messages.length === 0) {
       sendJson(res, 400, {
-        error: { message: 'The messages array cannot be empty.', type: 'invalid_request_error', code: 400 }
+        error: { message: 'Messages array cannot be empty.', type: 'invalid_request_error', code: 400 }
       });
       return;
     }
 
-    // Dynamic JanitorAI UI Slider Passthrough
     const sampling = {
       temperature: typeof payload.temperature === 'number' ? payload.temperature : config.defaultTemperature,
       topP: typeof payload.top_p === 'number' ? payload.top_p : config.defaultTopP,
-      maxOutputTokens: typeof payload.max_tokens === 'number' ? payload.max_tokens : (typeof payload.max_output_tokens === 'number' ? payload.max_output_tokens : undefined),
-      frequencyPenalty: typeof payload.frequency_penalty === 'number' ? payload.frequency_penalty : config.defaultFrequencyPenalty,
-      presencePenalty: typeof payload.presence_penalty === 'number' ? payload.presence_penalty : config.defaultPresencePenalty
+      maxOutputTokens:
+        typeof payload.max_tokens === 'number'
+          ? payload.max_tokens
+          : typeof payload.max_output_tokens === 'number'
+          ? payload.max_output_tokens
+          : undefined,
+      frequencyPenalty:
+        typeof payload.frequency_penalty === 'number' ? payload.frequency_penalty : config.defaultFrequencyPenalty,
+      presencePenalty:
+        typeof payload.presence_penalty === 'number' ? payload.presence_penalty : config.defaultPresencePenalty,
+      reasoningEffort: payload.reasoning_effort || payload.thinking
     };
 
     const authHeader = req.headers.authorization || '';
     const availableKeys = studioKeyManager.extractKeys(authHeader);
     const isStudioMode = availableKeys.length > 0;
     const engineName = isStudioMode
-      ? `Studio API (${availableKeys.length} key${availableKeys.length > 1 ? 's' : ''} | BLOCK_NONE)`
-      : 'Guest Web (Free Zero-Key)';
+      ? `Studio API (${availableKeys.length} key${availableKeys.length > 1 ? 's' : ''})`
+      : 'Guest Web (Anonymous)';
 
     const turnCount = messages.length;
     logIncoming(model, engineName, stream, sampling.temperature);
@@ -167,9 +173,15 @@ const server = http.createServer(async (req, res) => {
     const completionId = `chatcmpl-${crypto.randomUUID()}`;
     const createdTimestamp = Math.floor(Date.now() / 1000);
 
-    // ==========================================
-    // SSE STREAMING MODE (stream: true)
-    // ==========================================
+    const abortController = new AbortController();
+    let clientDisconnected = false;
+
+    req.on('close', () => {
+      clientDisconnected = true;
+      abortController.abort();
+    });
+
+    // SSE Streaming
     if (stream) {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream; charset=utf-8',
@@ -178,11 +190,6 @@ const server = http.createServer(async (req, res) => {
         'X-Accel-Buffering': 'no'
       });
       res.flushHeaders?.();
-
-      let clientDisconnected = false;
-      req.on('close', () => {
-        clientDisconnected = true;
-      });
 
       try {
         const initialChunk = {
@@ -197,13 +204,24 @@ const server = http.createServer(async (req, res) => {
         let tokenStream;
         if (isStudioMode) {
           const studioPayload = ContextBuilder.buildStudioPayload(messages, model);
-          tokenStream = GeminiStudioClient.streamCompletion(studioPayload, availableKeys, sampling);
+          tokenStream = GeminiStudioClient.streamCompletion(
+            studioPayload,
+            availableKeys,
+            sampling,
+            abortController.signal
+          );
         } else {
           const guestPrompt = ContextBuilder.buildGuestPrompt(messages, model);
           const conversationId =
             req.headers['x-session-id'] ||
             crypto.createHash('sha256').update(JSON.stringify(messages.slice(0, 2))).digest('hex');
-          tokenStream = GeminiGuestClient.streamCompletion(guestPrompt, model, sessionPool, conversationId);
+          tokenStream = GeminiGuestClient.streamCompletion(
+            guestPrompt,
+            model,
+            sessionPool,
+            conversationId,
+            abortController.signal
+          );
         }
 
         for await (const token of tokenStream) {
@@ -232,9 +250,11 @@ const server = http.createServer(async (req, res) => {
           logSuccess(turnCount, engineName);
         }
       } catch (streamErr) {
-        console.error(`${c.red}[ERROR] Stream fault: ${streamErr.message}${c.reset}`);
         if (!clientDisconnected) {
-          res.write(`data: ${JSON.stringify({ error: { message: streamErr.message, type: 'upstream_error', code: 502 } })}\n\n`);
+          console.error(`${c.red}[ERROR] Stream fault: ${streamErr.message}${c.reset}`);
+          res.write(
+            `data: ${JSON.stringify({ error: { message: streamErr.message, type: 'upstream_error', code: 502 } })}\n\n`
+          );
         }
       } finally {
         res.end();
@@ -242,20 +262,29 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // ==========================================
-    // NON-STREAMING JSON MODE (stream: false)
-    // ==========================================
+    // Non-Streaming
     try {
       let completionText = '';
       if (isStudioMode) {
         const studioPayload = ContextBuilder.buildStudioPayload(messages, model);
-        completionText = await GeminiStudioClient.completeText(studioPayload, availableKeys, sampling);
+        completionText = await GeminiStudioClient.completeText(
+          studioPayload,
+          availableKeys,
+          sampling,
+          abortController.signal
+        );
       } else {
         const guestPrompt = ContextBuilder.buildGuestPrompt(messages, model);
         const conversationId =
           req.headers['x-session-id'] ||
           crypto.createHash('sha256').update(JSON.stringify(messages.slice(0, 2))).digest('hex');
-        completionText = await GeminiGuestClient.completeText(guestPrompt, model, sessionPool, conversationId);
+        completionText = await GeminiGuestClient.completeText(
+          guestPrompt,
+          model,
+          sessionPool,
+          conversationId,
+          abortController.signal
+        );
       }
 
       const estimatedPromptTokens = Math.ceil(JSON.stringify(messages).length / 4);
@@ -290,16 +319,14 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(config.port, config.host, async () => {
   console.log(`${c.cyan}====================================================${c.reset}`);
-  console.log(`${c.cyan}${c.bold}   ASRIEL-PROXY-GEMINI v2.4 (ENHANCED CORE)         ${c.reset}`);
+  console.log(`${c.cyan}${c.bold}   ASRIEL-PROXY-GEMINI v2.5 (PRODUCTION)           ${c.reset}`);
   console.log(`${c.cyan}====================================================${c.reset}`);
   console.log(`[Host Binding]     : http://${config.host}:${config.port}`);
   console.log(`[JanitorAI URL]    : http://localhost:${config.port}/v1`);
   console.log(`[Default Model]    : ${config.defaultModel}`);
-  console.log(`[Anti-Puppeteer]   : Active (Never speaks for {{user}})`);
-  console.log(`[Anti-Catchphrase] : Active (Freq Decay: ${config.defaultFrequencyPenalty})`);
-  console.log(`[Janitor Sliders]  : Temp, Top-P, Max Tokens, Penalties Forwarded`);
+  console.log(`[Architecture]     : Gemini 3.x / 2.5 Dynamic Adaptor`);
   console.log('----------------------------------------------------');
 
   await sessionPool.initialize();
-  console.log(`${c.green}[System] Engine prewarmed. Ready to serve requests.${c.reset}`);
+  console.log(`${c.green}[System] Engine prewarmed. Ready for requests.${c.reset}`);
 });
