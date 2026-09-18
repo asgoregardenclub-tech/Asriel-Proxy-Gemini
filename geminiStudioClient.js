@@ -1,16 +1,28 @@
 /**
  * geminiStudioClient.js
  * Direct Google AI Studio API client with:
- * - JanitorAI UI Slider Passthrough (temperature, top_p, max_tokens, penalties)
- * - Anti-Loop / Catchphrase Decay (frequencyPenalty & presencePenalty)
- * - Live Google Search Grounding Tool
- * - Smart Model Cascading on 503
- * - Snappy 25s per-attempt timeout
+ * - Smart Penalty Compatibility Checker (protects Gemini 3.x from invalid penalty errors)
+ * - Model Cascading on 503
  * - Multi-Key Pool & 429 Failover
+ * - BLOCK_NONE safety filters
  */
 
 import { config } from './config.js';
 import { StreamCleaner, cleanText } from './cleaner.js';
+
+/**
+ * Checks whether a given model natively supports frequency/presence penalties.
+ * Gemini 3.x models do NOT support penalties and will corrupt sampling if passed.
+ */
+function supportsPenalties(modelId = '') {
+  const id = String(modelId).toLowerCase();
+  // Gemini 3.x series explicitly deprecates/rejects penalties
+  if (id.includes('3.') || id.includes('gemini-3')) {
+    return false;
+  }
+  // Only legacy 1.5 and 2.0 experimental models support penalties
+  return id.includes('1.5') || id.includes('2.0');
+}
 
 export class StudioKeyManager {
   constructor() {
@@ -94,16 +106,29 @@ export class GeminiStudioClient {
       validContents.unshift({ role: 'user', parts: [{ text: '(Roleplay Context)' }] });
     }
 
-    // Dynamic Sampling Passthrough from JanitorAI sliders
+    let targetModelId = studioPayload.studioId || 'gemini-3.8-flash';
+    if (targetModelId.includes('2.5') || targetModelId.includes('2.0')) {
+      targetModelId = 'gemini-3.8-flash';
+    }
+
+    // Clean sampling config: Temperature and Top-P only by default
     const generationConfig = {
       temperature: typeof sampling.temperature === 'number' ? sampling.temperature : config.defaultTemperature,
-      topP: typeof sampling.topP === 'number' ? sampling.topP : config.defaultTopP,
-      frequencyPenalty: typeof sampling.frequencyPenalty === 'number' ? sampling.frequencyPenalty : config.defaultFrequencyPenalty,
-      presencePenalty: typeof sampling.presencePenalty === 'number' ? sampling.presencePenalty : config.defaultPresencePenalty
+      topP: typeof sampling.topP === 'number' ? sampling.topP : config.defaultTopP
     };
 
     if (typeof sampling.maxOutputTokens === 'number' && sampling.maxOutputTokens > 0) {
       generationConfig.maxOutputTokens = sampling.maxOutputTokens;
+    }
+
+    // SMART PENALTY CHECK: Only attach if model supports it AND user explicitly set it
+    if (supportsPenalties(targetModelId)) {
+      if (typeof sampling.frequencyPenalty === 'number' && sampling.frequencyPenalty > 0) {
+        generationConfig.frequencyPenalty = sampling.frequencyPenalty;
+      }
+      if (typeof sampling.presencePenalty === 'number' && sampling.presencePenalty > 0) {
+        generationConfig.presencePenalty = sampling.presencePenalty;
+      }
     }
 
     const requestBody = {
@@ -112,7 +137,6 @@ export class GeminiStudioClient {
       generationConfig
     };
 
-    // Live Google Search Grounding Tool
     if (studioPayload.enableSearch) {
       requestBody.tools = [{ googleSearch: {} }];
     }
@@ -122,11 +146,6 @@ export class GeminiStudioClient {
       requestBody.systemInstruction = {
         parts: [{ text: sysText }]
       };
-    }
-
-    let targetModelId = studioPayload.studioId || 'gemini-3.8-flash';
-    if (targetModelId.includes('2.5') || targetModelId.includes('2.0')) {
-      targetModelId = 'gemini-3.8-flash';
     }
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -156,7 +175,7 @@ export class GeminiStudioClient {
       } catch (networkErr) {
         clearTimeout(timeoutId);
         lastError = networkErr;
-        console.warn(`[Studio API] Attempt ${attempt + 1} timeout on ${targetModelId}. Retrying...`);
+        console.warn(`[Studio API] Attempt ${attempt + 1} timed out on ${targetModelId}. Retrying...`);
         continue;
       }
 
@@ -261,7 +280,7 @@ export class GeminiStudioClient {
                     }
                   }
                 } catch (e) {
-                  // Partial frame skip
+                  // Skip malformed chunk
                 }
               }
             }
